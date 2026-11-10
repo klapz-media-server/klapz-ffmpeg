@@ -217,6 +217,7 @@ typedef struct OptionsContext {
     SpecifierOptList presets;
     SpecifierOptList copy_initial_nonkeyframes;
     SpecifierOptList copy_prior_start;
+    SpecifierOptList strict_ts;
     SpecifierOptList filters;
     SpecifierOptList reinit_filters;
     SpecifierOptList drop_changed;
