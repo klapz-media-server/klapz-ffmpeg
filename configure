@@ -2607,6 +2607,7 @@ TOOLCHAIN_FEATURES="
 TYPES_LIST="
     CudaFunctions_cuMemHostAlloc
     DPI_AWARENESS_CONTEXT
+    DXVA_PicParams_AV1
     IDXGIOutput5
     __x_ABI_CWindows_CGraphics_CCapture_CIGraphicsCaptureSession5
     IDirect3DDxgiInterfaceAccess
@@ -3370,13 +3371,13 @@ swscale_vulkan_if_any="spirv_headers_spirv_h spirv_unified1_spirv_h"
 
 apv_vulkan_hwaccel_deps="vulkan spirv_compiler"
 apv_vulkan_hwaccel_select="apv_decoder"
-av1_d3d11va_hwaccel_deps="d3d11va DXVA_PicParams_AV1"
+av1_d3d11va_hwaccel_deps="d3d11va" # PLEX: see dxva2_av1_compat.h
 av1_d3d11va_hwaccel_select="av1_decoder"
-av1_d3d11va2_hwaccel_deps="d3d11va DXVA_PicParams_AV1"
+av1_d3d11va2_hwaccel_deps="d3d11va" # PLEX: see dxva2_av1_compat.h
 av1_d3d11va2_hwaccel_select="av1_decoder"
-av1_d3d12va_hwaccel_deps="d3d12va DXVA_PicParams_AV1"
+av1_d3d12va_hwaccel_deps="d3d12va" # PLEX: see dxva2_av1_compat.h
 av1_d3d12va_hwaccel_select="av1_decoder"
-av1_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_AV1"
+av1_dxva2_hwaccel_deps="dxva2" # PLEX: see dxva2_av1_compat.h
 av1_dxva2_hwaccel_select="av1_decoder"
 av1_nvdec_hwaccel_deps="nvdec CUVIDAV1PICPARAMS"
 av1_nvdec_hwaccel_select="av1_decoder"
