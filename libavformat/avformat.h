@@ -3351,4 +3351,6 @@ int avformat_queue_attached_pictures(AVFormatContext *s);
  * @}
  */
 
+int avformat_http_do_new_request(AVIOContext *pb, const char *uri, const char *verb); //PLEX
+
 #endif /* AVFORMAT_AVFORMAT_H */
