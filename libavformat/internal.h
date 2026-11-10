@@ -130,6 +130,10 @@ typedef struct FFFormatContext {
      * scoped to this context.
      */
     struct CurlLoop *curl_loop;
+    //PLEX
+     * Whether or not a header has already been written
+    int header_written;
+    //PLEX
 } FFFormatContext;
 
 static av_always_inline FFFormatContext *ffformatcontext(AVFormatContext *s)
