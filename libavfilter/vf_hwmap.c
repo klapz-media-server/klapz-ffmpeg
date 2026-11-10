@@ -31,6 +31,10 @@
 #include "formats.h"
 #include "video.h"
 
+#if CONFIG_QSVVPP
+extern int ff_qsvvpp_check_dynamic_pool_supported(AVHWDeviceContext *device_ctx);
+#endif
+
 typedef struct HWMapContext {
     const AVClass *class;
 
@@ -154,6 +158,15 @@ static int hwmap_config_output(AVFilterLink *outlink)
 
             if (avctx->extra_hw_frames >= 0)
                 frames->initial_pool_size = 2 + avctx->extra_hw_frames;
+            
+#if CONFIG_QSVVPP
+            if (frames->format == AV_PIX_FMT_QSV) {
+                AVHWDeviceContext *qsv_ctx = frames->device_ctx;
+                if (!ff_qsvvpp_check_dynamic_pool_supported(qsv_ctx)) {
+                  frames->initial_pool_size = 0;
+                }
+            }
+#endif
 
 #if CONFIG_D3D11VA
             if (frames->format == AV_PIX_FMT_D3D11) {
@@ -241,6 +254,15 @@ static int hwmap_config_output(AVFilterLink *outlink)
 
         if (avctx->extra_hw_frames >= 0)
             hwfc->initial_pool_size = 2 + avctx->extra_hw_frames;
+        
+#if CONFIG_QSVVPP
+            if (hwfc->format == AV_PIX_FMT_QSV) {
+                AVHWDeviceContext *qsv_ctx = hwfc->device_ctx;
+                if (!ff_qsvvpp_check_dynamic_pool_supported(qsv_ctx)) {
+                    hwfc->initial_pool_size = 0;
+                }
+            }
+#endif
 
         err = av_hwframe_ctx_init(ctx->hwframes_ref);
         if (err < 0) {
