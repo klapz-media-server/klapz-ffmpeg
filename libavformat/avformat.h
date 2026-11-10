@@ -1573,6 +1573,10 @@ typedef struct AVFormatContext {
 #define AVFMT_FLAG_SORT_DTS    0x10000 ///< try to interleave outputted packets by dts (using this flag can slow demuxing down)
 #define AVFMT_FLAG_FAST_SEEK   0x80000 ///< Enable fast, but inaccurate seeks for some formats
 #define AVFMT_FLAG_AUTO_BSF   0x200000 ///< Add bitstream filters as requested by the muxer
+//PLEX: 0x400000 is taken by AVFMT_FLAG_LEGACY_ID3V2_COMM_KEYS since 9.0
+#define AVFMT_FLAG_DISCARD_CORRUPT_TS 0x1000000 ///< Discard timestamps of frames marked corrupt
+#define AVFMT_FLAG_FILL_WALLCLOCK_DTS 0x2000000 ///< Fill missing or discarded DTS values from wallclock (for live streams)
+//PLEX
 
 #if FF_API_OLD_ID3V2_COMMENT
 /**
