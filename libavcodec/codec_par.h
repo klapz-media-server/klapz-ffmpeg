@@ -226,6 +226,14 @@ typedef struct AVCodecParameters {
      */
     int      frame_size;
 
+//PLEX
+    int separate_fields;
+    int scaling_matrix_present;
+    int refs;
+    int coded_width, coded_height;
+    unsigned properties;
+//PLEX
+
     /**
      * Number of padding audio samples at the start.
      *

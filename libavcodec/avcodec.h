@@ -1952,6 +1952,19 @@ typedef struct AVCodecContext {
      * - decoding: Set by user.
      */
     enum AVDiscard skip_pred;
+//PLEX
+    /**
+     * Whether or not an H.264 scaling matrix is present
+     * - decoding: Set by h264 decoder
+     */
+    int scaling_matrix_present;
+
+    /**
+     * Set when the parser detected field coded pictures.
+     * - decoding: Set by libavcodec
+     */
+    int separate_fields;
+//PLEX
 } AVCodecContext;
 
 /**
