@@ -451,12 +451,17 @@ typedef struct MatroskaDemuxContext {
     int nb_cue_targets;
     int next_cue_target;
     int64_t cue_resume_pos;
+    /* The length of a cluster's size, once a block read through its cluster's header has
+     * shown it, and that cue times are block times: blocks are then read without their
+     * cluster's header, one seek instead of two. 0 while unknown. */
+    int cue_size_length;
 } MatroskaDemuxContext;
 
 typedef struct MatroskaCueTarget {
     int64_t  cluster;  /* absolute position of the cluster */
     uint64_t relative; /* position of the block within the cluster's data */
     uint64_t track;
+    uint64_t time;     /* the cue's time, in the segment's timestamp scale */
 } MatroskaCueTarget;
 
 #define CHILD_OF(parent) { .def = { .n = parent } }
@@ -4603,6 +4608,7 @@ static int matroska_cue_targets_init(MatroskaDemuxContext *matroska)
             target->cluster  = pos[j].pos + matroska->segment_start;
             target->relative = pos[j].relative;
             target->track    = pos[j].track;
+            target->time     = index[i].time;
         }
     }
 
@@ -4652,16 +4658,116 @@ static int matroska_read_element_header(MatroskaDemuxContext *matroska, uint32_t
     return *length == EBML_UNKNOWN_LENGTH ? AVERROR_INVALIDDATA : 0;
 }
 
-/* Reads the block a cue points at, and queues its packets. */
+/* Reads the SimpleBlock or BlockGroup at block_pos into bin. */
+static int matroska_read_cue_block(MatroskaDemuxContext *matroska, int64_t block_pos,
+                                   EbmlBin *bin, uint64_t *duration, int *is_keyframe)
+{
+    AVIOContext *pb = matroska->ctx->pb;
+    uint64_t length;
+    int64_t end, pos;
+    uint32_t id;
+    int ret;
+
+    *duration    = 0;
+    *is_keyframe = -1;
+    if ((pos = avio_seek(pb, block_pos, SEEK_SET)) < 0)
+        return pos;
+    if ((ret = matroska_read_element_header(matroska, &id, &length)) < 0)
+        return ret;
+    ret = 0;
+    if (id == MATROSKA_ID_SIMPLEBLOCK) {
+        if (length > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
+            return AVERROR_INVALIDDATA;
+        ret = ebml_read_binary(pb, length, avio_tell(pb), bin);
+    } else if (id == MATROSKA_ID_BLOCKGROUP) {
+        *is_keyframe = AV_PKT_FLAG_KEY;
+        end = avio_tell(pb) + length;
+        while (ret >= 0 && avio_tell(pb) < end) {
+            uint64_t child;
+            if ((ret = matroska_read_element_header(matroska, &id, &child)) < 0)
+                break;
+            if (id == MATROSKA_ID_BLOCK && !bin->size) {
+                if (child > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
+                    ret = AVERROR_INVALIDDATA;
+                else
+                    ret = ebml_read_binary(pb, child, avio_tell(pb), bin);
+            } else if (id == MATROSKA_ID_BLOCKDURATION) {
+                ret = child > 8 ? AVERROR_INVALIDDATA : ebml_read_uint(pb, child, 0, duration);
+            } else {
+                if (id == MATROSKA_ID_BLOCKREFERENCE)
+                    *is_keyframe = 0;
+                pos = avio_skip(pb, child);
+                ret = pos < 0 ? pos : 0;
+            }
+            /* What ebml_read_uint returns once it has read its bytes, and a short read of
+             * ebml_read_binary, which leaves the block empty. */
+            if (ret == NEEDS_CHECKING)
+                ret = bin->size || id != MATROSKA_ID_BLOCK ? 0 : AVERROR_INVALIDDATA;
+        }
+    } else {
+        return AVERROR_INVALIDDATA;
+    }
+    if (ret < 0 || ret == NEEDS_CHECKING || !bin->size) {
+        av_buffer_unref(&bin->buf);
+        memset(bin, 0, sizeof(*bin));
+        return ret < 0 ? ret : AVERROR_INVALIDDATA;
+    }
+    return 0;
+}
+
+/* A block's track number and its time relative to its cluster, its first fields. */
+static int matroska_cue_block_head(const EbmlBin *bin, uint64_t *track, int16_t *time)
+{
+    const uint8_t *data = bin->data;
+    int length;
+
+    if (bin->size < 1 || !data[0])
+        return AVERROR_INVALIDDATA;
+    length = 8 - ff_log2_tab[data[0]];
+    if (bin->size < length + 2)
+        return AVERROR_INVALIDDATA;
+    *track = data[0] ^ (1 << ff_log2_tab[data[0]]);
+    for (int i = 1; i < length; i++)
+        *track = (*track << 8) | data[i];
+    *time = sign_extend(AV_RB16(data + length), 16);
+    return 0;
+}
+
+/*
+ * Reads the block a cue points at, and queues its packets. Through its cluster's header
+ * first, for the cluster's timestamp and where its data starts; once that has shown the
+ * length of a cluster's size and that cue times are block times, straight at the block,
+ * its cluster's timestamp being the cue's time less the block's own. Such a block that is
+ * not one of the target's track, as when a cluster's size has another length, is read
+ * again through its cluster's header.
+ */
 static int matroska_read_cue_target(MatroskaDemuxContext *matroska,
                                     const MatroskaCueTarget *target)
 {
     AVIOContext *pb = matroska->ctx->pb;
-    uint64_t length, cluster_time = (uint64_t)-1, duration = 0;
-    int64_t cluster_data, block_pos, end, pos;
-    int is_keyframe = -1, ret;
+    uint64_t length, cluster_time = (uint64_t)-1, duration, track;
+    int64_t cluster_data, block_pos, pos;
+    int is_keyframe, ret;
     EbmlBin bin = { 0 };
+    int16_t block_time;
     uint32_t id;
+
+    if (matroska->cue_size_length &&
+        target->relative <= INT64_MAX - target->cluster - 4 - matroska->cue_size_length) {
+        block_pos = target->cluster + 4 + matroska->cue_size_length + target->relative;
+        if (block_pos >= matroska->cue_resume_pos &&
+            matroska_read_cue_block(matroska, block_pos, &bin, &duration, &is_keyframe) >= 0) {
+            if (matroska_cue_block_head(&bin, &track, &block_time) >= 0 &&
+                track == target->track &&
+                (int64_t)target->time - block_time >= 0) {
+                cluster_time = target->time - block_time;
+                goto parse;
+            }
+            av_buffer_unref(&bin.buf);
+            memset(&bin, 0, sizeof(bin));
+        }
+        matroska->cue_size_length = 0;
+    }
 
     if ((pos = avio_seek(pb, target->cluster, SEEK_SET)) < 0)
         return pos;
@@ -4695,48 +4801,13 @@ static int matroska_read_cue_target(MatroskaDemuxContext *matroska,
     if (cluster_time == (uint64_t)-1)
         return AVERROR_INVALIDDATA;
 
-    if ((pos = avio_seek(pb, block_pos, SEEK_SET)) < 0)
-        return pos;
-    if ((ret = matroska_read_element_header(matroska, &id, &length)) < 0)
+    if ((ret = matroska_read_cue_block(matroska, block_pos, &bin, &duration, &is_keyframe)) < 0)
         return ret;
-    ret = 0;
-    if (id == MATROSKA_ID_SIMPLEBLOCK) {
-        if (length > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
-            return AVERROR_INVALIDDATA;
-        ret = ebml_read_binary(pb, length, avio_tell(pb), &bin);
-    } else if (id == MATROSKA_ID_BLOCKGROUP) {
-        is_keyframe = AV_PKT_FLAG_KEY;
-        end = avio_tell(pb) + length;
-        while (ret >= 0 && avio_tell(pb) < end) {
-            uint64_t child;
-            if ((ret = matroska_read_element_header(matroska, &id, &child)) < 0)
-                break;
-            if (id == MATROSKA_ID_BLOCK && !bin.size) {
-                if (child > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
-                    ret = AVERROR_INVALIDDATA;
-                else
-                    ret = ebml_read_binary(pb, child, avio_tell(pb), &bin);
-            } else if (id == MATROSKA_ID_BLOCKDURATION) {
-                ret = child > 8 ? AVERROR_INVALIDDATA : ebml_read_uint(pb, child, 0, &duration);
-            } else {
-                if (id == MATROSKA_ID_BLOCKREFERENCE)
-                    is_keyframe = 0;
-                pos = avio_skip(pb, child);
-                ret = pos < 0 ? pos : 0;
-            }
-            /* What ebml_read_uint returns once it has read its bytes, and a short read of
-             * ebml_read_binary, which leaves the block empty. */
-            if (ret == NEEDS_CHECKING)
-                ret = bin.size || id != MATROSKA_ID_BLOCK ? 0 : AVERROR_INVALIDDATA;
-        }
-    } else {
-        return AVERROR_INVALIDDATA;
-    }
-    if (ret < 0 || ret == NEEDS_CHECKING || !bin.size) {
-        av_buffer_unref(&bin.buf);
-        return ret < 0 ? ret : AVERROR_INVALIDDATA;
-    }
+    if (matroska_cue_block_head(&bin, &track, &block_time) >= 0 &&
+        track == target->track && cluster_time + block_time == target->time)
+        matroska->cue_size_length = cluster_data - target->cluster - 4;
 
+parse:
     ret = matroska_parse_block(matroska, bin.buf, bin.data, bin.size, bin.pos,
                                cluster_time, duration, is_keyframe, NULL, 0,
                                target->cluster, 0);
