@@ -320,6 +320,7 @@ typedef struct MatroskaChapter {
 typedef struct MatroskaIndexPos {
     uint64_t track;
     uint64_t pos;
+    uint64_t relative;
 } MatroskaIndexPos;
 
 typedef struct MatroskaIndex {
@@ -439,7 +440,23 @@ typedef struct MatroskaDemuxContext {
 
     /* Bandwidth value for WebM DASH Manifest */
     int bandwidth;
+
+    /* Reading only the subtitle blocks the cues point at: the option, whether it applies
+     * (0 not decided yet, 1 yes, -1 no), the blocks in file order, the next one, and where
+     * the regular parsing stopped, before which every block was already read. */
+    int subtitle_cues;
+    int cue_mode;
+    struct MatroskaCueTarget *cue_targets;
+    int nb_cue_targets;
+    int next_cue_target;
+    int64_t cue_resume_pos;
 } MatroskaDemuxContext;
+
+typedef struct MatroskaCueTarget {
+    int64_t  cluster;  /* absolute position of the cluster */
+    uint64_t relative; /* position of the block within the cluster's data */
+    uint64_t track;
+} MatroskaCueTarget;
 
 #define CHILD_OF(parent) { .def = { .n = parent } }
 
@@ -699,7 +716,7 @@ static EbmlSyntax matroska_chapters[] = {
 static EbmlSyntax matroska_index_pos[] = {
     { MATROSKA_ID_CUETRACK,           EBML_UINT, 0, 0, offsetof(MatroskaIndexPos, track) },
     { MATROSKA_ID_CUECLUSTERPOSITION, EBML_UINT, 0, 0, offsetof(MatroskaIndexPos, pos) },
-    { MATROSKA_ID_CUERELATIVEPOSITION,EBML_NONE },
+    { MATROSKA_ID_CUERELATIVEPOSITION,EBML_UINT, 0, 0, offsetof(MatroskaIndexPos, relative), { .u = UINT64_MAX } },
     { MATROSKA_ID_CUEDURATION,        EBML_NONE },
     { MATROSKA_ID_CUEBLOCKNUMBER,     EBML_NONE },
     CHILD_OF(matroska_index_entry)
@@ -4337,10 +4354,236 @@ static int matroska_parse_cluster(MatroskaDemuxContext *matroska)
     return res;
 }
 
+static int cue_target_cmp(const void *a, const void *b)
+{
+    const MatroskaCueTarget *x = a, *y = b;
+    if (x->cluster != y->cluster)
+        return x->cluster < y->cluster ? -1 : 1;
+    return x->relative < y->relative ? -1 : x->relative > y->relative;
+}
+
+/*
+ * Whether only subtitle tracks are read and their cues say where each of their blocks is.
+ * Subtitle blocks are a few bytes interleaved with the whole film: read through the cues
+ * rather than by parsing every cluster, they cost megabytes instead of the whole file.
+ * Returns 1 when the cue targets are ready, 0 to decide later (other tracks are still read,
+ * as during avformat_find_stream_info), and -1 when they cannot be used.
+ */
+static int matroska_cue_targets_init(MatroskaDemuxContext *matroska)
+{
+    AVFormatContext *s = matroska->ctx;
+    MatroskaTrack *tracks = matroska->tracks.elem;
+    MatroskaIndex *index;
+    int kept = 0;
+
+    for (int i = 0; i < matroska->tracks.nb_elem; i++) {
+        AVStream *st = tracks[i].stream;
+        if (!st || st->discard >= AVDISCARD_ALL)
+            continue;
+        if (tracks[i].type != MATROSKA_TRACK_TYPE_SUBTITLE)
+            return 0;
+        kept++;
+    }
+    if (!kept || !(s->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        (s->flags & AVFMT_FLAG_IGNIDX) || matroska->is_live)
+        return -1;
+    /* Parsing the cues resets the status to level 1: wait for the end of the cluster. */
+    if (matroska->num_levels != 1)
+        return 0;
+    if (matroska->cues_parsing_deferred > 0) {
+        matroska->cues_parsing_deferred = 0;
+        matroska_parse_cues(matroska);
+    }
+    if (matroska->cues_parsing_deferred < 0)
+        return -1;
+
+    index = matroska->index.elem;
+    for (int i = 0; i < matroska->index.nb_elem; i++) {
+        MatroskaIndexPos *pos = index[i].pos.elem;
+        for (int j = 0; j < index[i].pos.nb_elem; j++) {
+            MatroskaTrack *track = matroska_find_track_by_num(matroska, pos[j].track);
+            MatroskaCueTarget *target;
+            if (!track || !track->stream || track->stream->discard >= AVDISCARD_ALL)
+                continue;
+            /* Without its place in the cluster, the whole cluster would have to be read. */
+            if (pos[j].relative == UINT64_MAX)
+                return -1;
+            target = av_dynarray2_add((void **)&matroska->cue_targets,
+                                      &matroska->nb_cue_targets, sizeof(*target), NULL);
+            if (!target)
+                return -1;
+            target->cluster  = pos[j].pos + matroska->segment_start;
+            target->relative = pos[j].relative;
+            target->track    = pos[j].track;
+        }
+    }
+
+    /* A read track with no cue at all is one whose blocks the cues do not index. */
+    for (int i = 0; i < matroska->tracks.nb_elem; i++) {
+        AVStream *st = tracks[i].stream;
+        int indexed = 0;
+        if (!st || st->discard >= AVDISCARD_ALL)
+            continue;
+        for (int j = 0; j < matroska->nb_cue_targets && !indexed; j++)
+            indexed = matroska->cue_targets[j].track == tracks[i].num;
+        if (!indexed)
+            return -1;
+    }
+
+    qsort(matroska->cue_targets, matroska->nb_cue_targets, sizeof(*matroska->cue_targets),
+          cue_target_cmp);
+    /* Several cue points may name the same block: it is read once. */
+    for (int i = 1, kept_targets = 1; i <= matroska->nb_cue_targets; i++) {
+        if (i == matroska->nb_cue_targets) {
+            matroska->nb_cue_targets = kept_targets;
+            break;
+        }
+        if (cue_target_cmp(&matroska->cue_targets[i], &matroska->cue_targets[kept_targets - 1]))
+            matroska->cue_targets[kept_targets++] = matroska->cue_targets[i];
+    }
+    matroska->cue_resume_pos = avio_tell(s->pb);
+    av_log(s, AV_LOG_VERBOSE, "Reading %d subtitle blocks through the cues.\n",
+           matroska->nb_cue_targets);
+    return 1;
+}
+
+static int matroska_read_element_header(MatroskaDemuxContext *matroska, uint32_t *id,
+                                        uint64_t *length)
+{
+    AVIOContext *pb = matroska->ctx->pb;
+    uint64_t num;
+    int res = ebml_read_num(matroska, pb, 4, &num, 1);
+    if (res < 0)
+        return res;
+    *id = num | 1 << 7 * res;
+    res = ebml_read_length(matroska, pb, length);
+    if (res < 0)
+        return res;
+    return *length == EBML_UNKNOWN_LENGTH ? AVERROR_INVALIDDATA : 0;
+}
+
+/* Reads the block a cue points at, and queues its packets. */
+static int matroska_read_cue_target(MatroskaDemuxContext *matroska,
+                                    const MatroskaCueTarget *target)
+{
+    AVIOContext *pb = matroska->ctx->pb;
+    uint64_t length, cluster_time = (uint64_t)-1, duration = 0;
+    int64_t cluster_data, block_pos, end;
+    int is_keyframe = -1, ret;
+    EbmlBin bin = { 0 };
+    uint32_t id;
+
+    if ((ret = avio_seek(pb, target->cluster, SEEK_SET)) < 0)
+        return ret;
+    if ((ret = ebml_read_num(matroska, pb, 4, &length, 1)) < 0)
+        return ret;
+    if ((length | 1 << 7 * ret) != MATROSKA_ID_CLUSTER)
+        return AVERROR_INVALIDDATA;
+    /* A cluster of unknown length is fine: only its start matters. */
+    if ((ret = ebml_read_length(matroska, pb, &length)) < 0)
+        return ret;
+    cluster_data = avio_tell(pb);
+    if (target->relative > INT64_MAX - cluster_data)
+        return AVERROR_INVALIDDATA;
+    block_pos = cluster_data + target->relative;
+    if (block_pos < matroska->cue_resume_pos)
+        return 0;
+
+    /* The cluster's timestamp, its first child as a rule. */
+    while (cluster_time == (uint64_t)-1 && avio_tell(pb) < block_pos) {
+        if ((ret = matroska_read_element_header(matroska, &id, &length)) < 0)
+            return ret;
+        if (id == MATROSKA_ID_CLUSTERTIMECODE) {
+            if (length > 8)
+                return AVERROR_INVALIDDATA;
+            if ((ret = ebml_read_uint(pb, length, 0, &cluster_time)) < 0)
+                return ret;
+        } else if ((ret = avio_skip(pb, length)) < 0) {
+            return ret;
+        }
+    }
+    if (cluster_time == (uint64_t)-1)
+        return AVERROR_INVALIDDATA;
+
+    if ((ret = avio_seek(pb, block_pos, SEEK_SET)) < 0)
+        return ret;
+    if ((ret = matroska_read_element_header(matroska, &id, &length)) < 0)
+        return ret;
+    ret = 0;
+    if (id == MATROSKA_ID_SIMPLEBLOCK) {
+        if (length > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
+            return AVERROR_INVALIDDATA;
+        ret = ebml_read_binary(pb, length, avio_tell(pb), &bin);
+    } else if (id == MATROSKA_ID_BLOCKGROUP) {
+        is_keyframe = AV_PKT_FLAG_KEY;
+        end = avio_tell(pb) + length;
+        while (ret >= 0 && avio_tell(pb) < end) {
+            uint64_t child;
+            if ((ret = matroska_read_element_header(matroska, &id, &child)) < 0)
+                break;
+            if (id == MATROSKA_ID_BLOCK && !bin.size) {
+                if (child > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
+                    ret = AVERROR_INVALIDDATA;
+                else
+                    ret = ebml_read_binary(pb, child, avio_tell(pb), &bin);
+            } else if (id == MATROSKA_ID_BLOCKDURATION) {
+                ret = child > 8 ? AVERROR_INVALIDDATA : ebml_read_uint(pb, child, 0, &duration);
+            } else {
+                if (id == MATROSKA_ID_BLOCKREFERENCE)
+                    is_keyframe = 0;
+                ret = avio_skip(pb, child);
+            }
+            /* What ebml_read_uint returns once it has read its bytes, and a short read of
+             * ebml_read_binary, which leaves the block empty. */
+            if (ret == NEEDS_CHECKING)
+                ret = bin.size || id != MATROSKA_ID_BLOCK ? 0 : AVERROR_INVALIDDATA;
+            else if (ret > 0)
+                ret = 0;
+        }
+    } else {
+        return AVERROR_INVALIDDATA;
+    }
+    if (ret < 0 || ret == NEEDS_CHECKING || !bin.size) {
+        av_buffer_unref(&bin.buf);
+        return ret < 0 ? ret : AVERROR_INVALIDDATA;
+    }
+
+    ret = matroska_parse_block(matroska, bin.buf, bin.data, bin.size, bin.pos,
+                               cluster_time, duration, is_keyframe, NULL, 0,
+                               target->cluster, 0);
+    av_buffer_unref(&bin.buf);
+    return ret;
+}
+
+static int matroska_read_cue_packet(MatroskaDemuxContext *matroska, AVPacket *pkt)
+{
+    while (matroska_deliver_packet(matroska, pkt)) {
+        int ret;
+        if (matroska->next_cue_target >= matroska->nb_cue_targets) {
+            matroska->done = 1;
+            return AVERROR_EOF;
+        }
+        ret = matroska_read_cue_target(matroska,
+                                       &matroska->cue_targets[matroska->next_cue_target++]);
+        if (ret < 0)
+            av_log(matroska->ctx, AV_LOG_WARNING,
+                   "Skipping the subtitle block a cue points at: %s\n", av_err2str(ret));
+    }
+    return 0;
+}
+
 static int matroska_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     MatroskaDemuxContext *matroska = s->priv_data;
     int ret = 0;
+
+    if (matroska->subtitle_cues && !matroska->cue_mode) {
+        matroska->cue_mode = matroska_cue_targets_init(matroska);
+        if (matroska->cue_mode < 0)
+            av_freep(&matroska->cue_targets);
+    }
+    if (matroska->cue_mode > 0)
+        return matroska_read_cue_packet(matroska, pkt);
 
     if (matroska->resync_pos == -1) {
         // This can only happen if generic seeking has been used.
@@ -4365,6 +4608,12 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
     AVStream *st = s->streams[stream_index];
     FFStream *const sti = ffstream(st);
     int i, index;
+
+    /* After a seek, blocks are found again by parsing clusters from there. */
+    if (matroska->cue_mode > 0) {
+        matroska->cue_mode = -1;
+        av_freep(&matroska->cue_targets);
+    }
 
     /* Parse the CUES now since we need the index data to seek. */
     if (matroska->cues_parsing_deferred > 0) {
@@ -4432,6 +4681,7 @@ static int matroska_read_close(AVFormatContext *s)
     int n;
 
     matroska_clear_queue(matroska);
+    av_freep(&matroska->cue_targets);
 
     for (n = 0; n < matroska->tracks.nb_elem; n++)
         if (tracks[n].type == MATROSKA_TRACK_TYPE_AUDIO)
@@ -4894,8 +5144,23 @@ const FFInputFormat ff_webm_dash_manifest_demuxer = {
 };
 #endif
 
+static const AVOption matroska_options[] = {
+    { "subtitle_cues", "when only subtitle tracks are read, read just the blocks the cues point at",
+      offsetof(MatroskaDemuxContext, subtitle_cues), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1,
+      AV_OPT_FLAG_DECODING_PARAM },
+    { NULL },
+};
+
+static const AVClass matroska_class = {
+    .class_name = "matroska,webm demuxer",
+    .item_name  = av_default_item_name,
+    .option     = matroska_options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
 const FFInputFormat ff_matroska_demuxer = {
     .p.name         = "matroska,webm",
+    .p.priv_class   = &matroska_class,
     .p.long_name    = NULL_IF_CONFIG_SMALL("Matroska / WebM"),
     .p.extensions   = "mkv,mk3d,mka,mks,webm",
     .p.mime_type    = "audio/webm,audio/x-matroska,video/webm,video/x-matroska",
