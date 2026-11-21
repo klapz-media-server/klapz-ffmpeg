@@ -4565,12 +4565,22 @@ static int matroska_cue_targets_init(MatroskaDemuxContext *matroska)
     if (!kept || !(s->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
         (s->flags & AVFMT_FLAG_IGNIDX) || matroska->is_live)
         return -1;
-    /* Parsing the cues resets the status to level 1: wait for the end of the cluster. */
-    if (matroska->num_levels != 1)
-        return 0;
     if (matroska->cues_parsing_deferred > 0) {
+        /* Parsing the cues puts the parser back at level 1: within a cluster, its state is
+         * put back as it was, so that the regular parsing can go on if the cues are no use. */
+        MatroskaLevel levels[EBML_MAX_DEPTH];
+        int num_levels        = matroska->num_levels;
+        uint32_t current_id   = matroska->current_id;
+        int64_t resync_pos    = matroska->resync_pos;
+        int unknown_count     = matroska->unknown_count;
+        memcpy(levels, matroska->levels, sizeof(levels));
         matroska->cues_parsing_deferred = 0;
         matroska_parse_cues(matroska);
+        memcpy(matroska->levels, levels, sizeof(levels));
+        matroska->num_levels    = num_levels;
+        matroska->current_id    = current_id;
+        matroska->resync_pos    = resync_pos;
+        matroska->unknown_count = unknown_count;
     }
     if (matroska->cues_parsing_deferred < 0)
         return -1;
@@ -4620,6 +4630,8 @@ static int matroska_cue_targets_init(MatroskaDemuxContext *matroska)
             matroska->cue_targets[kept_targets++] = matroska->cue_targets[i];
     }
     matroska->cue_resume_pos = avio_tell(s->pb);
+    if (matroska->current_id)
+        matroska->cue_resume_pos -= (av_log2(matroska->current_id) + 7) / 8;
     av_log(s, AV_LOG_VERBOSE, "Reading %d subtitle blocks through the cues.\n",
            matroska->nb_cue_targets);
     return 1;
@@ -4646,13 +4658,13 @@ static int matroska_read_cue_target(MatroskaDemuxContext *matroska,
 {
     AVIOContext *pb = matroska->ctx->pb;
     uint64_t length, cluster_time = (uint64_t)-1, duration = 0;
-    int64_t cluster_data, block_pos, end;
+    int64_t cluster_data, block_pos, end, pos;
     int is_keyframe = -1, ret;
     EbmlBin bin = { 0 };
     uint32_t id;
 
-    if ((ret = avio_seek(pb, target->cluster, SEEK_SET)) < 0)
-        return ret;
+    if ((pos = avio_seek(pb, target->cluster, SEEK_SET)) < 0)
+        return pos;
     if ((ret = ebml_read_num(matroska, pb, 4, &length, 1)) < 0)
         return ret;
     if ((length | 1 << 7 * ret) != MATROSKA_ID_CLUSTER)
@@ -4676,15 +4688,15 @@ static int matroska_read_cue_target(MatroskaDemuxContext *matroska,
                 return AVERROR_INVALIDDATA;
             if ((ret = ebml_read_uint(pb, length, 0, &cluster_time)) < 0)
                 return ret;
-        } else if ((ret = avio_skip(pb, length)) < 0) {
-            return ret;
+        } else if ((pos = avio_skip(pb, length)) < 0) {
+            return pos;
         }
     }
     if (cluster_time == (uint64_t)-1)
         return AVERROR_INVALIDDATA;
 
-    if ((ret = avio_seek(pb, block_pos, SEEK_SET)) < 0)
-        return ret;
+    if ((pos = avio_seek(pb, block_pos, SEEK_SET)) < 0)
+        return pos;
     if ((ret = matroska_read_element_header(matroska, &id, &length)) < 0)
         return ret;
     ret = 0;
@@ -4709,14 +4721,13 @@ static int matroska_read_cue_target(MatroskaDemuxContext *matroska,
             } else {
                 if (id == MATROSKA_ID_BLOCKREFERENCE)
                     is_keyframe = 0;
-                ret = avio_skip(pb, child);
+                pos = avio_skip(pb, child);
+                ret = pos < 0 ? pos : 0;
             }
             /* What ebml_read_uint returns once it has read its bytes, and a short read of
              * ebml_read_binary, which leaves the block empty. */
             if (ret == NEEDS_CHECKING)
                 ret = bin.size || id != MATROSKA_ID_BLOCK ? 0 : AVERROR_INVALIDDATA;
-            else if (ret > 0)
-                ret = 0;
         }
     } else {
         return AVERROR_INVALIDDATA;
