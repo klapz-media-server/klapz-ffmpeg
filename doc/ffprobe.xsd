@@ -297,6 +297,7 @@
     <xsd:attribute name="chroma_location"      type="xsd:string"/>
     <xsd:attribute name="field_order"          type="xsd:string"/>
     <xsd:attribute name="refs"                 type="xsd:int"/>
+    <xsd:attribute name="scaling_matrix_present" type="xsd:boolean"/>
 
     <!-- audio attributes -->
     <xsd:attribute name="sample_fmt"       type="xsd:string"/>

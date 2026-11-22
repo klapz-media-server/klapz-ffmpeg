@@ -1828,14 +1828,18 @@ static int show_stream(AVTextFormatContext *tfc, AVFormatContext *fmt_ctx, int s
     case AVMEDIA_TYPE_VIDEO:
         print_int("width",        par->width);
         print_int("height",       par->height);
-        if (dec_ctx) {
+        if (par->coded_width > 0 && par->coded_height > 0) {
+            /* as the demuxer's decoder read it from the bitstream, before
+             * cropping: the decoder opened here only knows the cropped size */
+            print_int("coded_width",  par->coded_width);
+            print_int("coded_height", par->coded_height);
+        } else if (dec_ctx) {
             print_int("coded_width",  dec_ctx->coded_width);
             print_int("coded_height", dec_ctx->coded_height);
-
-            if (do_analyze_frames) {
-                print_int("closed_captions", streams_with_closed_captions[stream->index]);
-                print_int("film_grain",      streams_with_film_grain[stream->index]);
-            }
+        }
+        if (dec_ctx && do_analyze_frames) {
+            print_int("closed_captions", streams_with_closed_captions[stream->index]);
+            print_int("film_grain",      streams_with_film_grain[stream->index]);
         }
         print_int("has_b_frames", par->video_delay);
         sar = av_guess_sample_aspect_ratio(fmt_ctx, stream, NULL);
@@ -1874,6 +1878,10 @@ static int show_stream(AVTextFormatContext *tfc, AVFormatContext *fmt_ctx, int s
 
         if (dec_ctx && do_read_frames)
             print_int("refs", dec_ctx->refs);
+        else if (par->refs > 0)
+            print_int("refs", par->refs);
+        if (par->codec_id == AV_CODEC_ID_H264)
+            print_int("scaling_matrix_present", par->scaling_matrix_present);
         break;
 
     case AVMEDIA_TYPE_AUDIO:
