@@ -1716,6 +1716,7 @@ static int mov_read_moov(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         return 0;
     }
 
+    c->moov_before_mdat = !c->found_mdat;
     if ((ret = mov_read_default(c, pb, atom)) < 0)
         return ret;
     /* we parsed the 'moov' atom, we can terminate the parsing as soon as we find the 'mdat' */
@@ -2835,6 +2836,9 @@ static int mov_read_stco(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     AVStream *st;
     MOVStreamContext *sc;
     unsigned int i, entries;
+
+    if (atom.type == MKTAG('c','o','6','4'))
+        c->co64 = 1;
 
     if (c->trak_index < 0) {
         av_log(c->fc, AV_LOG_WARNING, "STCO outside TRAK\n");
@@ -13293,6 +13297,10 @@ static const AVOption mov_options[] = {
         {.i64 = 0}, 0, 1, FLAGS },
     { "max_stts_delta", "treat offsets above this value as invalid", OFFSET(max_stts_delta), AV_OPT_TYPE_INT, {.i64 = UINT_MAX-48000*10 }, 0, UINT_MAX, .flags = AV_OPT_FLAG_DECODING_PARAM },
     { "interleaved_read", "Interleave packets from multiple tracks at demuxer level", OFFSET(interleaved_read), AV_OPT_TYPE_BOOL, {.i64 = 1 }, 0, 1, .flags = AV_OPT_FLAG_DECODING_PARAM },
+    { "moov_before_mdat", "the 'moov' atom comes before any 'mdat'", OFFSET(moov_before_mdat), AV_OPT_TYPE_BOOL,
+        {.i64 = 0}, 0, 1, AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
+    { "co64", "a track's chunk offsets are 64-bit", OFFSET(co64), AV_OPT_TYPE_BOOL,
+        {.i64 = 0}, 0, 1, AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
 
     { NULL },
 };
