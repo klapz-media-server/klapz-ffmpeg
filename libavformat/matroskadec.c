@@ -638,8 +638,8 @@ static EbmlSyntax matroska_track[] = {
     { MATROSKA_ID_CODECID,               EBML_STR,   0, 0, offsetof(MatroskaTrack, codec_id) },
     { MATROSKA_ID_CODECPRIVATE,          EBML_BIN,   0, 0, offsetof(MatroskaTrack, codec_priv) },
     { MATROSKA_ID_CODECDELAY,            EBML_UINT,  0, 0, offsetof(MatroskaTrack, codec_delay),  { .u = 0 } },
-    { MATROSKA_ID_TRACKLANGUAGE,         EBML_STR,   0, 0, offsetof(MatroskaTrack, language),     { .s = "und" } },
-    { MATROSKA_ID_TRACKLANGUAGEBCP47,    EBML_STR,   0, 0, offsetof(MatroskaTrack, languageBCP47),{ .s = "und" } },
+    { MATROSKA_ID_TRACKLANGUAGE,         EBML_STR,   0, 0, offsetof(MatroskaTrack, language) },
+    { MATROSKA_ID_TRACKLANGUAGEBCP47,    EBML_STR,   0, 0, offsetof(MatroskaTrack, languageBCP47) },
     { MATROSKA_ID_TRACKDEFAULTDURATION,  EBML_UINT,  0, 0, offsetof(MatroskaTrack, default_duration) },
     { MATROSKA_ID_TRACKTIMECODESCALE,    EBML_FLOAT, 0, 0, offsetof(MatroskaTrack, time_scale),   { .f = 1.0 } },
     { MATROSKA_ID_TRACKFLAGCOMMENTARY,   EBML_UINT,  0, 0, offsetof(MatroskaTrack, flag_comment), { .u = 0 } },
@@ -3317,24 +3317,19 @@ static int matroska_parse_tracks(AVFormatContext *s)
                         AV_DICT_DONT_STRDUP_VAL);
         }
 
-        /* If languageBCP47 tag is present it supersedes the language tag.  Preserve both if present */
-        if ((track->languageBCP47 != NULL) && strcmp(track->languageBCP47, "und"))
+        /* LanguageBCP47 supersedes Language, which is English when the
+         * track writes neither; "und" (undetermined) is no language.
+         * Preserve both if present. */
         {
-            av_dict_set(&st->metadata, "language", track->languageBCP47, 0);
-            if ((track->language != NULL) && strcmp(track->language, "und"))
-            {
-                av_dict_set(&st->metadata, "languageISO639", track->language, 0);
+            const char *language = track->languageBCP47 ? track->languageBCP47 :
+                                   track->language      ? track->language      : "eng";
+            const char *iso639   = track->language      ? track->language      :
+                                   track->languageBCP47 ? NULL                 : "eng";
+            if (*language && strcmp(language, "und")) {
+                av_dict_set(&st->metadata, "language", language, 0);
+                if (iso639 && *iso639 && strcmp(iso639, "und"))
+                    av_dict_set(&st->metadata, "languageISO639", iso639, 0);
             }
-        }
-        else if ((track->language != NULL) && strcmp(track->language, "und"))
-        {
-            av_dict_set(&st->metadata, "language", track->language, 0);
-            av_dict_set(&st->metadata, "languageISO639", track->language, 0);
-        }
-        else
-        {
-            av_dict_set(&st->metadata, "language", "eng", 0);
-            av_dict_set(&st->metadata, "languageISO639", "eng", 0);
         }
         
         av_dict_set(&st->metadata, "title", track->name, 0);
