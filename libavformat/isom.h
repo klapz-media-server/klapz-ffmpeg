@@ -387,6 +387,8 @@ typedef struct MOVContext {
     int interleaved_read;
     AVDictionary* decryption_keys;
     unsigned heif_icc_profile_items;
+    int moov_before_mdat; ///< exported: the 'moov' atom comes before any 'mdat'
+    int co64;             ///< exported: a track's chunk offsets are 64-bit
 } MOVContext;
 
 int ff_mp4_read_descr_len(AVIOContext *pb);
