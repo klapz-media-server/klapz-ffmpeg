@@ -46,6 +46,9 @@
 --enable-libopus
 --enable-libvorbis
 --enable-libdav1d
+# not in Plex: audio fingerprints for intro detection (`-f chromaprint`),
+# what Plex computes with a separate fpcalc
+--enable-chromaprint
 
 --enable-decoder=png
 --enable-decoder=apng
