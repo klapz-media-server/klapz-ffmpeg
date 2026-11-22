@@ -193,8 +193,10 @@ build_x264() {
 build_chromaprint() {
     fetch chromaprint https://github.com/acoustid/chromaprint/releases/download/v$CHROMAPRINT_VER/chromaprint-$CHROMAPRINT_VER.tar.gz
     # the bundled KissFFT on every target, so that a file has the same
-    # fingerprint whatever platform computed it (macOS would pick vDSP)
-    cmake_build -DFFT_LIB=kissfft -DBUILD_TOOLS=OFF -DBUILD_TESTS=OFF
+    # fingerprint whatever platform computed it (macOS would pick vDSP); its
+    # directory given, since a cross toolchain file roots find_path in the sysroot
+    cmake_build -DFFT_LIB=kissfft -DKISSFFT_SOURCE_DIR="$PWD/src/3rdparty/kissfft" \
+        -DBUILD_TOOLS=OFF -DBUILD_TESTS=OFF
 }
 
 build_opencl() {
