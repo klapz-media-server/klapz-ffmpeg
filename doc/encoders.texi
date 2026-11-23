@@ -4780,6 +4780,16 @@ one byte per subtitle on average.
 By default, this work-around is disabled.
 @end table
 
+@section imsc_image
+
+This codec encodes bitmap subtitles (PGS, DVD, DVB...) as PNG images with
+their position, for the @ref{imsc_image} muxer, which writes them as a TTML
+document of the IMSC1 Image profile.
+
+An empty subtitle, which clears the screen in PGS, ends the previous one.
+Fully transparent images, such as the subtitles hidden by the
+@option{forced_subs_only} option of the PGS decoder, are skipped.
+
 @section lrc
 
 This codec encodes the LRC lyrics format.
