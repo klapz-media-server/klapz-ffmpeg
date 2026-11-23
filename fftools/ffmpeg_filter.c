@@ -2029,8 +2029,11 @@ static int configure_input_filter(FilterGraph *fg, AVFilterGraph *graph,
 
 static void cleanup_filtergraph(FilterGraph *fg, FilterGraphThread *fgt)
 {
-    for (int i = 0; i < fg->nb_outputs; i++)
+    for (int i = 0; i < fg->nb_outputs; i++) {
         fg->outputs[i]->filter = NULL;
+        // drop the last frame retained by FPS conversion before graph reinitialization
+        av_frame_unref(ofp_from_ofilter(fg->outputs[i])->fps.last_frame);
+    }
     for (int i = 0; i < fg->nb_inputs; i++)
         fg->inputs[i]->filter = NULL;
     plex_unlink_subtitles_from_graph(fgt->graph); //PLEX
