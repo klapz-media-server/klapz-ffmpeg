@@ -3111,7 +3111,9 @@ static int mov_write_video_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
                                                                track->st->codecpar->nb_coded_side_data,
                                                                AV_PKT_DATA_DOVI_CONF);
         if (dovi && mov->fc->strict_std_compliance <= FF_COMPLIANCE_UNOFFICIAL) {
-            mov_write_dvcc_dvvc_tag(s, pb, (AVDOVIDecoderConfigurationRecord *)dovi->data);
+            if (!ff_isom_validate_dovi_config((AVDOVIDecoderConfigurationRecord *)dovi->data, track->par, track->tag)) {
+                mov_write_dvcc_dvvc_tag(s, pb, (AVDOVIDecoderConfigurationRecord *)dovi->data);
+            }
         } else if (dovi) {
             av_log(mov->fc, AV_LOG_WARNING, "Not writing 'dvcC'/'dvvC' box. Requires -strict unofficial.\n");
         }
@@ -9506,6 +9508,7 @@ static const AVCodecTag codec_mp4_tags[] = {
     { AV_CODEC_ID_HEVC,            MKTAG('h', 'e', 'v', '1') },
     { AV_CODEC_ID_HEVC,            MKTAG('h', 'v', 'c', '1') },
     { AV_CODEC_ID_HEVC,            MKTAG('d', 'v', 'h', '1') },
+    { AV_CODEC_ID_HEVC,            MKTAG('d', 'v', 'h', 'e') },
     { AV_CODEC_ID_VVC,             MKTAG('v', 'v', 'c', '1') },
     { AV_CODEC_ID_VVC,             MKTAG('v', 'v', 'i', '1') },
     { AV_CODEC_ID_EVC,             MKTAG('e', 'v', 'c', '1') },
