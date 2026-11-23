@@ -103,6 +103,32 @@ int ff_make_codec_str(void *logctx, const AVCodecParameters *par,
         int level = AV_LEVEL_UNKNOWN;
         char constraints[8] = "";
 
+        /* hvcC (ISO/IEC 14496-15, 8.3.3.1), as Matroska and MP4 carry it,
+         * where no start code precedes the SPS: it holds every field of the
+         * string itself. The sample entry is hev1 unless the stream says hvc1,
+         * as the mov muxer writes it. */
+        if (data && par->extradata_size >= 13 && data[0] == 1) {
+            uint32_t tag = par->codec_tag == MKTAG('h','v','c','1') ?
+                           MKTAG('h','v','c','1') : MKTAG('h','e','v','1');
+            uint32_t flags = AV_RB32(data + 2), reversed = 0;
+            int space = data[1] >> 6, last = 11;
+
+            for (i = 0; i < 32; i++)
+                if (flags & (1U << i))
+                    reversed |= 1U << (31 - i);
+            av_bprintf(out, "%s.", av_fourcc2str(tag));
+            if (space)
+                av_bprint_chars(out, 'A' + space - 1, 1);
+            av_bprintf(out, "%d.%x.%c%d", data[1] & 0x1f, reversed,
+                       data[1] & 0x20 ? 'H' : 'L', data[12]);
+            /* trailing zero bytes of the constraint flags are left out */
+            while (last >= 6 && !data[last])
+                last--;
+            for (i = 6; i <= last; i++)
+                av_bprintf(out, ".%02X", data[i]);
+            return 0;
+        }
+
         if (par->profile != AV_PROFILE_UNKNOWN)
             profile = par->profile;
         if (par->level != AV_LEVEL_UNKNOWN)
