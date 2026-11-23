@@ -23,6 +23,7 @@
 #include <stddef.h>
 
 #include "libavutil/frame.h"
+#include "libavutil/intreadwrite.h"
 #include "avcodec.h"
 #include "aom_film_grain.h"
 #include "dovi_rpu.h"
@@ -136,5 +137,16 @@ int ff_itut_t35_parse_payload_to_frame(FFITUTT35 *itut_t35, FFITUTT35Aux *aux,
  * Unref all references in metadata
  */
 void ff_itut_t35_unref(FFITUTT35Meta *metadata);
+
+/* payload starts after the country code and includes the application version. */
+static inline int ff_itut35_is_hdr10plus(uint8_t country_code,
+                                        const uint8_t *payload, size_t payload_size)
+{
+    return country_code == ITU_T_T35_COUNTRY_CODE_US &&
+           payload_size >= 6 &&
+           AV_RB16(payload)     == ITU_T_T35_PROVIDER_CODE_SAMSUNG &&
+           AV_RB16(payload + 2) == 0x0001 &&
+           payload[4]          == 0x04;
+}
 
 #endif /* AVCODEC_ITUT35_H */
