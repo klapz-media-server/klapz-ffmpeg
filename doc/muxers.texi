@@ -2739,6 +2739,66 @@ ffmpeg -f x11grab -framerate 1 -i :0.0 -q:v 6 -update 1 -protocol_opts method=PU
 @end example
 @end itemize
 
+@anchor{imsc_image}
+@section imsc_image
+IMSC1 Image subtitle muxer.
+
+It writes the bitmap subtitles encoded by the @samp{imsc_image} encoder as a
+TTML document of the IMSC1 Image profile
+(@url{https://www.w3.org/TR/ttml-imsc1.0.1/#image-profile}), with one PNG file
+per image next to the document, or as SMPTE-TT (ST 2052-1) with the images
+embedded in Base64.  Both forms are read by Shaka Player.
+
+Each image is placed in a region at its position in the video, whose size is
+the @code{tts:extent} of the document.  As bitmap subtitles such as PGS have no
+end time, an image is shown until the next subtitle, or until the end of its
+duration if it has one.  An image which is sent again unchanged, as PGS does at
+random access points, continues instead of starting again.  The document is
+written once all the subtitles are read.
+
+Use @option{-copyts} so that the subtitles keep the time of the video, as
+@command{ffmpeg} otherwise moves the start of the input to 0.
+
+@subsection Options
+@table @option
+@item embed_images @var{bool}
+Embed the images in the document in Base64 (SMPTE-TT, without the IMSC1 Image
+profile) instead of writing PNG files next to it.  Required when the output is
+a pipe.  Default is @code{0}.
+
+@item image_prefix @var{string}
+Start of the names of the PNG files, relative to the directory of the document,
+followed by the number of the image and @file{.png}.  The directories it names
+must exist.  Default is the name of the document without its extension,
+followed by @code{_}.
+
+@item last_duration @var{duration}
+Duration of the last subtitle if no later subtitle ends it.  Default is
+@code{5} seconds.
+@end table
+
+@subsection Examples
+@itemize
+@item
+Convert the first subtitle track of a Matroska file to @file{fr.ttml} and
+@file{fr_00001.png}, @file{fr_00002.png}...:
+@example
+ffmpeg -copyts -i input.mkv -map 0:s:0 -f imsc_image fr.ttml
+@end example
+
+@item
+Same, from a PGS file, with the images in a @file{fr/} directory:
+@example
+ffmpeg -copyts -i input.sup -f imsc_image -image_prefix fr/ fr.ttml
+@end example
+
+@item
+Write a single file with the images embedded:
+@example
+ffmpeg -copyts -i input.sup -f imsc_image -embed_images 1 fr.ttml
+@end example
+@end itemize
+
 @section ircam
 Berkeley / IRCAM / CARL Sound Filesystem (BICSF) format muxer.
 

@@ -619,6 +619,7 @@ OBJS-$(CONFIG_TRUEHD_MUXER)              += rawenc.o
 OBJS-$(CONFIG_TTA_DEMUXER)               += tta.o apetag.o img2.o
 OBJS-$(CONFIG_TTA_MUXER)                 += ttaenc.o apetag.o img2.o
 OBJS-$(CONFIG_TTML_MUXER)                += ttmlenc.o
+OBJS-$(CONFIG_IMSC_IMAGE_MUXER)          += imscimageenc.o
 OBJS-$(CONFIG_TTY_DEMUXER)               += tty.o sauce.o
 OBJS-$(CONFIG_TY_DEMUXER)                += ty.o
 OBJS-$(CONFIG_TXD_DEMUXER)               += txd.o
