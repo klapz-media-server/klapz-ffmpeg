@@ -791,7 +791,9 @@ static int frame_encode(OutputStream *ost, AVFrame *frame, AVPacket *pkt)
                                      (AVSubtitle*)frame->buf[0]->data : NULL;
 
         // no flushing for subtitles
-        return subtitle && subtitle->num_rects ?
+        // imsc_image: an empty bitmap subtitle (PGS) ends the previous one
+        return subtitle && (subtitle->num_rects ||
+                            e->enc_ctx->codec_id == AV_CODEC_ID_IMSC_IMAGE) ?
                do_subtitle_out(of, ost, subtitle, pkt) : 0;
     }
 

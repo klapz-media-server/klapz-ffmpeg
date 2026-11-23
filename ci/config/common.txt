@@ -91,6 +91,8 @@
 
 --enable-encoder=flac,alac,libvorbis,libopus,mjpeg,png,rawvideo,wrapped_avframe
 --enable-encoder=ass,dvbsub,dvdsub,movtext,ssa,subrip,text,webvtt,xsub
+# not in Plex: bitmap subtitles (PGS...) to TTML IMSC1 Image + PNG (-f imsc_image)
+--enable-encoder=imsc_image
 --enable-encoder=pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le
 --enable-encoder=pcm_s8,pcm_s8_planar,pcm_s16be,pcm_s16be_planar,pcm_s16le,pcm_s16le_planar
 --enable-encoder=pcm_s24be,pcm_s24le,pcm_s24le_planar,pcm_s32be,pcm_s32le,pcm_s32le_planar

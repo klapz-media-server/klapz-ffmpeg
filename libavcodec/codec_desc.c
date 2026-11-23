@@ -3756,6 +3756,13 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .name      = "ivtv_vbi",
         .long_name = NULL_IF_CONFIG_SMALL("ivtv VBI captions"),
     },
+    {
+        .id        = AV_CODEC_ID_IMSC_IMAGE,
+        .type      = AVMEDIA_TYPE_SUBTITLE,
+        .name      = "imsc_image",
+        .long_name = NULL_IF_CONFIG_SMALL("IMSC1 Image subtitles (PNG)"),
+        .props     = AV_CODEC_PROP_BITMAP_SUB,
+    },
 
     /* other kind of codecs and pseudo-codecs */
     {
