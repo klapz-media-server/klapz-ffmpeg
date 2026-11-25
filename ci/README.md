@@ -16,7 +16,7 @@ configuration du Plex Transcoder (Plex Media Server 1.43.5.11029,
 Workflow : `.github/workflows/build-ffmpeg.yml`. Il se déclenche sur chaque push
 de branche, les pull requests et manuellement (`workflow_dispatch`). Chaque
 push sur `master` publie en plus une release GitHub `v<version>-<n° de run>`
-(par ex. `v8.1.3-12`) avec les binaires de toutes les plateformes.
+(par ex. `v9.1-12`) avec les binaires de toutes les plateformes.
 
 ## Fichiers
 
