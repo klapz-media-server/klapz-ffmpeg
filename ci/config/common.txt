@@ -68,9 +68,7 @@
 --enable-decoder=r210
 --enable-decoder=v210
 --enable-decoder=v210x
---enable-decoder=v308
---enable-decoder=v408
---enable-decoder=v410
+# v308, v408, v410: decoders removed from FFmpeg in 9.0, handled by rawvideo
 --enable-decoder=y41p
 --enable-decoder=yuv4
 --enable-decoder=ansi
