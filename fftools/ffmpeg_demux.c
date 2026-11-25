@@ -104,6 +104,12 @@ typedef struct DemuxStream {
     /// dts of the last packet read for this stream (in AV_TIME_BASE units)
     int64_t                  dts;
 
+    /* For video packets without a dts whose frames are reordered: the
+     * largest video_delay + 1 pts read so far, ascending (in AV_TIME_BASE
+     * units), and how many of them are filled. */
+    int64_t                  reorder_pts[MAX_REORDER_DELAY + 1];
+    int                      nb_reorder_pts;
+
     const AVCodecDescriptor *codec_desc;
 
     AVDictionary            *decoder_opts;
@@ -333,10 +339,50 @@ static void ts_discontinuity_process(Demuxer *d, InputStream *ist,
         ts_discontinuity_detect(d, ist, pkt);
 }
 
+/* Records a video packet's pts, and returns the dts it implies, or
+ * AV_NOPTS_VALUE while too few packets have been read to tell.
+ *
+ * Matroska stores no dts, and its packet durations are rounded to its
+ * timestamp precision: 42 ms for a frame of 41.708 ms at 24000/1001. Adding
+ * them up runs ahead of the pts, and once the predicted dts passes a frame's
+ * pts the muxer squeezes frames into 1-tick durations and moves their pts.
+ *
+ * With frames reordered by at most video_delay, the packet read in position
+ * i is decoded in time to show the frame in position i - video_delay, so its
+ * dts is the (video_delay + 1)-th largest pts read so far: the dts follow
+ * the pts, never pass them, and only grow. Every packet's pts counts, those
+ * the demuxer gave a dts included. */
+static int64_t reordered_dts(DemuxStream *ds, const AVPacket *pkt)
+{
+    const int delay = ds->ist.par->video_delay;
+    int64_t *buffer = ds->reorder_pts;
+    int64_t pts;
+
+    if (pkt->pts == AV_NOPTS_VALUE || delay <= 0 || delay > MAX_REORDER_DELAY)
+        return AV_NOPTS_VALUE;
+
+    pts = av_rescale_q(pkt->pts, pkt->time_base, AV_TIME_BASE_Q);
+    if (ds->nb_reorder_pts <= delay) {
+        int i = ds->nb_reorder_pts++;
+        for (; i > 0 && buffer[i - 1] > pts; i--)
+            buffer[i] = buffer[i - 1];
+        buffer[i] = pts;
+        if (ds->nb_reorder_pts <= delay)
+            return AV_NOPTS_VALUE;
+    } else if (pts > buffer[0]) {
+        int i = 0;
+        for (; i < delay && buffer[i + 1] < pts; i++)
+            buffer[i] = buffer[i + 1];
+        buffer[i] = pts;
+    }
+    return buffer[0];
+}
+
 static int ist_dts_update(DemuxStream *ds, AVPacket *pkt, FrameData *fd)
 {
     InputStream *ist = &ds->ist;
     const AVCodecParameters *par = ist->par;
+    int64_t reordered = AV_NOPTS_VALUE;
 
     if (!ds->saw_first_ts) {
         ds->first_dts =
@@ -351,8 +397,15 @@ static int ist_dts_update(DemuxStream *ds, AVPacket *pkt, FrameData *fd)
     if (ds->next_dts == AV_NOPTS_VALUE)
         ds->next_dts = ds->dts;
 
+    if (par->codec_type == AVMEDIA_TYPE_VIDEO && !ist->framerate.num)
+        reordered = reordered_dts(ds, pkt);
+
     if (pkt->dts != AV_NOPTS_VALUE)
         ds->next_dts = ds->dts = av_rescale_q(pkt->dts, pkt->time_base, AV_TIME_BASE_Q);
+    else if (reordered != AV_NOPTS_VALUE)
+        // Frames shown before the first one read, as after a seek into an
+        // open GOP, would otherwise take the dts back.
+        ds->next_dts = FFMAX(reordered, ds->dts);
 
     ds->dts = ds->next_dts;
     switch (par->codec_type) {
