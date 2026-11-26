@@ -6,7 +6,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git make perl python3 python3-pip xz-utils bzip2 \
-    pkg-config autoconf automake libtool nasm cmake ninja-build \
+    pkg-config autoconf automake libtool gettext autopoint nasm cmake ninja-build \
     clang lld llvm libc6-dev libstdc++-12-dev file > /dev/null
 pip3 install -q meson==1.6.1
 if [ "${1:-}" = windows ]; then
