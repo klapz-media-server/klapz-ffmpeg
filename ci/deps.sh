@@ -29,6 +29,8 @@ LIBDRM_VER=2.4.124
 LIBVA_VER=2.22.0
 NVCODEC_VER=13.0.19.0
 CHROMAPRINT_VER=1.6.2
+ZVBI_VER=0.2.46
+LIBICONV_VER=1.18
 
 SRC_DIR=${SRC_DIR:-$PWD/.deps-src}
 BLD_DIR=${BLD_DIR:-$PWD/.deps-build/$TARGET}
@@ -82,7 +84,7 @@ cmake_build() {
 
 # --------------------------------------------------------------------------
 build_zlib() {
-    fetch zlib https://zlib.net/fossils/zlib-$ZLIB_VER.tar.gz
+    fetch zlib https://github.com/madler/zlib/releases/download/v$ZLIB_VER/zlib-$ZLIB_VER.tar.gz
     if [ "$OS" = windows ]; then
         make -f win32/Makefile.gcc -j"$JOBS" libz.a CC="$CC" AR="$AR" RC="$WINDRES" CFLAGS="$CFLAGS"
         cp zlib.h zconf.h "$PREFIX/include/"; cp libz.a "$PREFIX/lib/"
@@ -199,6 +201,23 @@ build_chromaprint() {
         -DBUILD_TOOLS=OFF -DBUILD_TESTS=OFF
 }
 
+build_libiconv() {
+    # Windows has no iconv, which zvbi converts teletext's character sets with
+    fetch libiconv https://ftp.gnu.org/pub/gnu/libiconv/libiconv-$LIBICONV_VER.tar.gz
+    autotools --disable-nls
+}
+
+build_zvbi() {
+    # teletext subtitles (the libzvbi_teletext decoder); only the decoding
+    # library, none of its capture devices, tools or translations
+    fetch zvbi https://github.com/zapping-vbi/zvbi/archive/refs/tags/v$ZVBI_VER.tar.gz
+    # a tag's archive has no configure
+    autoreconf -fi
+    # libpng would only serve its PNG export, which ffmpeg does not use; and
+    # the libiconv built for Windows, which its --with-libiconv-prefix misses
+    ac_cv_lib_png_png_destroy_write_struct=no         CPPFLAGS="-I$PREFIX/include" LDFLAGS="-L$PREFIX/lib"         autotools --disable-nls --disable-v4l --disable-dvb --disable-bktr         --disable-proxy --disable-tests --disable-examples --without-doxygen         --without-x
+}
+
 build_opencl() {
     fetch opencl-headers https://github.com/KhronosGroup/OpenCL-Headers/archive/refs/tags/$OPENCL_VER.tar.gz
     cmake_build -DBUILD_TESTING=OFF
@@ -268,6 +287,8 @@ build_omx_headers() {
 
 build_all_deps() {
     local list="zlib freetype fribidi harfbuzz libass ogg vorbis opus dav1d libxml2 openssl lame x264 chromaprint"
+    [ "$OS" = windows ] && list="$list libiconv"
+    list="$list zvbi"
     case $TARGET in
         linux-x86_64)   list="$list nvcodec opencl libdrm libva" ;;
         linux-arm64)    list="$list omx_headers" ;;

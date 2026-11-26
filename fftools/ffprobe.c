@@ -2075,6 +2075,46 @@ static void print_dispositions(AVTextFormatContext *tfc, uint32_t disposition, S
     avtext_print_section_footer(tfc);
 }
 
+/* The subtitle pages a DVB teletext stream declares (ETSI EN 300 468,
+ * teletext_descriptor), each with its language and its kind:
+ * "888:fra:hearing_impaired,889:fra:subtitles". The MPEG-TS demuxer keeps
+ * two bytes per page in the extradata (the type and magazine, then the page
+ * in BCD), and their languages in that order in the "language" tag, joined
+ * with commas. Pages that are not subtitles are left out, and so are those
+ * whose number is not decimal, which libzvbi's txt_page cannot name. */
+static void print_teletext_pages(AVTextFormatContext *tfc, const AVStream *stream)
+{
+    const AVCodecParameters *par = stream->codecpar;
+    const AVDictionaryEntry *tag = av_dict_get(stream->metadata, "language", NULL, 0);
+    const char *languages = tag ? tag->value : "";
+    size_t languages_len = strlen(languages);
+    AVBPrint pages;
+
+    av_bprint_init(&pages, 0, AV_BPRINT_SIZE_AUTOMATIC);
+    for (int i = 0; i + 1 < par->extradata_size; i += 2) {
+        int type     = par->extradata[i] >> 3;
+        int magazine = par->extradata[i] & 7;
+        int tens     = par->extradata[i + 1] >> 4;
+        int units    = par->extradata[i + 1] & 0xf;
+        const char *kind = type == 2 ? "subtitles" :
+                           type == 5 ? "hearing_impaired" : NULL;
+        size_t at = (size_t)i / 2 * 4;
+        char language[4] = "";
+
+        if (!kind || tens > 9 || units > 9)
+            continue;
+        if (at + 3 <= languages_len &&
+            (languages[at + 3] == ',' || languages[at + 3] == '\0'))
+            av_strlcpy(language, languages + at, sizeof(language));
+        av_bprintf(&pages, "%s%d:%s:%s", pages.len ? "," : "",
+                   (magazine ? magazine : 8) * 100 + tens * 10 + units,
+                   language, kind);
+    }
+    if (pages.len && av_bprint_is_complete(&pages))
+        print_str("teletext_pages", pages.str);
+    av_bprint_finalize(&pages, NULL);
+}
+
 #define IN_PROGRAM 1
 #define IN_STREAM_GROUP 2
 
@@ -2254,6 +2294,8 @@ static int show_stream(AVTextFormatContext *tfc, AVFormatContext *fmt_ctx, int s
             print_int("height",      par->height);
         else
             print_str_opt("height",  "N/A");
+        if (par->codec_id == AV_CODEC_ID_DVB_TELETEXT)
+            print_teletext_pages(tfc, stream);
         break;
     }
 

@@ -49,6 +49,9 @@
 # not in Plex: audio fingerprints for intro detection (`-f chromaprint`),
 # what Plex computes with a separate fpcalc
 --enable-chromaprint
+# not in Plex: teletext subtitles, decoded to text (libzvbi_teletext)
+--enable-libzvbi
+--enable-decoder=libzvbi_teletext
 
 --enable-decoder=png
 --enable-decoder=apng
