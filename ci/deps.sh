@@ -84,7 +84,7 @@ cmake_build() {
 
 # --------------------------------------------------------------------------
 build_zlib() {
-    fetch zlib https://zlib.net/fossils/zlib-$ZLIB_VER.tar.gz
+    fetch zlib https://github.com/madler/zlib/releases/download/v$ZLIB_VER/zlib-$ZLIB_VER.tar.gz
     if [ "$OS" = windows ]; then
         make -f win32/Makefile.gcc -j"$JOBS" libz.a CC="$CC" AR="$AR" RC="$WINDRES" CFLAGS="$CFLAGS"
         cp zlib.h zconf.h "$PREFIX/include/"; cp libz.a "$PREFIX/lib/"
