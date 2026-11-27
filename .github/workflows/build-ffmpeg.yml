@@ -64,6 +64,7 @@ jobs:
           "$f" -hide_banner -version
           "$f" -hide_banner -decoders | grep -E ' (h264|hevc|aac|ac3|eac3_eae) '
           "$f" -hide_banner -decoders | grep ' libzvbi_teletextdec '
+          "$f" -hide_banner -filters | grep ' zscale '
           "$f" -hide_banner -filters | grep -E 'tonemap|inlineass' || true
           # lavfi is a device and libavdevice is disabled (like Plex): raw input
           "$f" -hide_banner -f rawvideo -pix_fmt yuv420p -s 320x240 -r 25 -t 1 -i /dev/zero \

@@ -52,6 +52,9 @@
 # not in Plex: teletext subtitles, decoded to text (libzvbi_teletext)
 --enable-libzvbi
 --enable-decoder=libzvbi_teletext
+# not in Plex: zscale (libzimg) for HDR HLG/PQ → linear before tonemap; filters
+# are not allowlisted (unlike decoders), so --enable-libzimg enables zscale
+--enable-libzimg
 
 --enable-decoder=png
 --enable-decoder=apng
