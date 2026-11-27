@@ -2075,19 +2075,132 @@ static void print_dispositions(AVTextFormatContext *tfc, uint32_t disposition, S
     avtext_print_section_footer(tfc);
 }
 
-/* The subtitle pages a DVB teletext stream declares (ETSI EN 300 468,
- * teletext_descriptor), each with its language and its kind:
- * "888:fra:hearing_impaired,889:fra:subtitles". The MPEG-TS demuxer keeps
- * two bytes per page in the extradata (the type and magazine, then the page
- * in BCD), and their languages in that order in the "language" tag, joined
- * with commas. Pages that are not subtitles are left out, and so are those
- * whose number is not decimal, which libzvbi's txt_page cannot name. */
-static void print_teletext_pages(AVTextFormatContext *tfc, const AVStream *stream)
+/* How much of a stream is read for the teletext pages it carries: every page
+ * header comes round within a second or two, and a file with no teletext
+ * page in that span costs no more than this. */
+#define TELETEXT_SCAN_SECONDS 5
+#define TELETEXT_SCAN_BYTES   (32 << 20)
+
+typedef struct TeletextPages {
+    uint8_t seen[900];      /* by page number, 100 to 899 */
+    char    language[900][4];
+} TeletextPages;
+
+/* A Hamming 8/4 byte as DVB carries it (EN 300 472: each byte is sent with
+ * its bits reversed), its four data bits without the protection bits. */
+static int teletext_hamming(uint8_t byte)
+{
+    return ((byte >> 6) & 1) | ((byte >> 4) & 1) << 1 |
+           ((byte >> 2) & 1) << 2 | (byte & 1) << 3;
+}
+
+/* The language a page's national option (C12 to C14, ETS 300 706 table 32)
+ * names in the default Latin G0 set. Only those it names alone: the others
+ * share a value (Portuguese and Spanish, Czech and Slovak, ...), and 0, for
+ * English, is also what a broadcaster that sets none sends. */
+static const char *teletext_language(int c12, int c13, int c14)
+{
+    switch (c12 << 2 | c13 << 1 | c14) {
+    case 1:  return "deu";
+    case 3:  return "ita";
+    case 4:  return "fra";
+    default: return "";
+    }
+}
+
+/* Notes the subtitle pages whose headers (row 0, C6 set) a teletext PES
+ * packet holds: the data identifier, then data units of 44 bytes. */
+static void teletext_scan_packet(TeletextPages *found, const uint8_t *data, int size)
+{
+    if (size < 1 || data[0] < 0x10 || data[0] > 0x1f)
+        return;
+    for (int i = 1; i + 2 <= size;) {
+        int id = data[i], length = data[i + 1];
+        const uint8_t *unit = data + i + 2;
+
+        i += 2 + length;
+        if (i > size)
+            break;
+        if ((id != 0x02 && id != 0x03) || length != 44 || unit[1] != 0xe4)
+            continue;
+        {
+            int address  = teletext_hamming(unit[2]) | teletext_hamming(unit[3]) << 4;
+            int magazine = address & 7, row = address >> 3;
+            int units    = teletext_hamming(unit[4]);
+            int tens     = teletext_hamming(unit[5]);
+            int c6       = teletext_hamming(unit[9]) >> 3;
+            int national = teletext_hamming(unit[11]);
+            int page;
+
+            if (row != 0 || units > 9 || tens > 9 || !c6)
+                continue;
+            page = (magazine ? magazine : 8) * 100 + tens * 10 + units;
+            found->seen[page] = 1;
+            av_strlcpy(found->language[page],
+                       teletext_language(national >> 1 & 1, national >> 2 & 1, national >> 3),
+                       sizeof(found->language[page]));
+        }
+    }
+}
+
+/* The subtitle pages a teletext stream carries, read from the start of the
+ * file through a second demuxer of its own, so that the one ffprobe reports
+ * on is left where it is. Nothing for an input that cannot be read twice. */
+static int teletext_scan(const AVFormatContext *fmt_ctx, const AVStream *stream,
+                         TeletextPages *found)
+{
+    AVFormatContext *scan = NULL;
+    AVPacket *pkt;
+    int64_t first = AV_NOPTS_VALUE;
+    int ret;
+
+    if (!fmt_ctx->url || !fmt_ctx->pb || !(fmt_ctx->pb->seekable & AVIO_SEEKABLE_NORMAL))
+        return 0;
+    if ((ret = avformat_open_input(&scan, fmt_ctx->url, fmt_ctx->iformat, NULL)) < 0)
+        return ret;
+    if (!(pkt = av_packet_alloc())) {
+        avformat_close_input(&scan);
+        return AVERROR(ENOMEM);
+    }
+    while (avio_tell(scan->pb) < TELETEXT_SCAN_BYTES && av_read_frame(scan, pkt) >= 0) {
+        const AVStream *read = scan->streams[pkt->stream_index];
+
+        if (read->id == stream->id && read->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT) {
+            teletext_scan_packet(found, pkt->data, pkt->size);
+            if (pkt->pts != AV_NOPTS_VALUE) {
+                if (first == AV_NOPTS_VALUE)
+                    first = pkt->pts;
+                else if (av_rescale_q(pkt->pts - first, read->time_base, AV_TIME_BASE_Q) >=
+                         TELETEXT_SCAN_SECONDS * (int64_t)AV_TIME_BASE) {
+                    av_packet_unref(pkt);
+                    break;
+                }
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    avformat_close_input(&scan);
+    return 0;
+}
+
+/* The subtitle pages of a DVB teletext stream, each with its language and its
+ * kind: "888:fra:hearing_impaired,889:fra:subtitles,150:deu:subtitles".
+ * First those the stream declares (ETSI EN 300 468, teletext_descriptor): the
+ * MPEG-TS demuxer keeps two bytes per page in the extradata (the type and
+ * magazine, then the page in BCD), and their languages in that order in the
+ * "language" tag, joined with commas. Then those it carries without
+ * declaring them, read from its page headers, with the language their
+ * character set names. Pages that are not subtitles are left out, and so are
+ * those whose number is not decimal, which libzvbi's txt_page cannot name. */
+static void print_teletext_pages(AVTextFormatContext *tfc, const AVFormatContext *fmt_ctx,
+                                 const AVStream *stream)
 {
     const AVCodecParameters *par = stream->codecpar;
     const AVDictionaryEntry *tag = av_dict_get(stream->metadata, "language", NULL, 0);
     const char *languages = tag ? tag->value : "";
     size_t languages_len = strlen(languages);
+    TeletextPages *declared = av_mallocz(sizeof(*declared));
     AVBPrint pages;
 
     av_bprint_init(&pages, 0, AV_BPRINT_SIZE_AUTOMATIC);
@@ -2100,15 +2213,32 @@ static void print_teletext_pages(AVTextFormatContext *tfc, const AVStream *strea
                            type == 5 ? "hearing_impaired" : NULL;
         size_t at = (size_t)i / 2 * 4;
         char language[4] = "";
+        int page;
 
         if (!kind || tens > 9 || units > 9)
             continue;
+        page = (magazine ? magazine : 8) * 100 + tens * 10 + units;
+        if (declared) {
+            if (declared->seen[page])
+                continue;
+            declared->seen[page] = 1;
+        }
         if (at + 3 <= languages_len &&
             (languages[at + 3] == ',' || languages[at + 3] == '\0'))
             av_strlcpy(language, languages + at, sizeof(language));
-        av_bprintf(&pages, "%s%d:%s:%s", pages.len ? "," : "",
-                   (magazine ? magazine : 8) * 100 + tens * 10 + units,
-                   language, kind);
+        av_bprintf(&pages, "%s%d:%s:%s", pages.len ? "," : "", page, language, kind);
+    }
+    if (declared) {
+        TeletextPages *carried = av_mallocz(sizeof(*carried));
+
+        if (carried && teletext_scan(fmt_ctx, stream, carried) >= 0) {
+            for (int page = 100; page < 900; page++)
+                if (carried->seen[page] && !declared->seen[page])
+                    av_bprintf(&pages, "%s%d:%s:subtitles", pages.len ? "," : "",
+                               page, carried->language[page]);
+        }
+        av_free(carried);
+        av_free(declared);
     }
     if (pages.len && av_bprint_is_complete(&pages))
         print_str("teletext_pages", pages.str);
@@ -2295,7 +2425,7 @@ static int show_stream(AVTextFormatContext *tfc, AVFormatContext *fmt_ctx, int s
         else
             print_str_opt("height",  "N/A");
         if (par->codec_id == AV_CODEC_ID_DVB_TELETEXT)
-            print_teletext_pages(tfc, stream);
+            print_teletext_pages(tfc, fmt_ctx, stream);
         break;
     }
 
