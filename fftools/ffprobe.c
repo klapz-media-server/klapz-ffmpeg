@@ -51,6 +51,7 @@
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
+#include "libavutil/sha.h"
 #include "libavutil/spherical.h"
 #include "libavutil/stereo3d.h"
 #include "libavutil/dict.h"
@@ -120,6 +121,7 @@ static int do_show_pixel_format_components = 0;
 static int do_show_log = 0;
 
 static int do_show_chapter_tags = 0;
+static int do_show_format_hashes = 0;
 static int do_show_format_tags = 0;
 static int do_show_frame_tags = 0;
 static int do_show_program_tags = 0;
@@ -175,6 +177,7 @@ typedef enum {
     SECTION_ID_CHAPTERS,
     SECTION_ID_ERROR,
     SECTION_ID_FORMAT,
+    SECTION_ID_FORMAT_HASHES,
     SECTION_ID_FORMAT_TAGS,
     SECTION_ID_FRAME,
     SECTION_ID_FRAMES,
@@ -286,7 +289,8 @@ static const AVTextFormatSection sections[] = {
     [SECTION_ID_CHAPTER] =            { SECTION_ID_CHAPTER, "chapter", 0, { SECTION_ID_CHAPTER_TAGS, -1 } },
     [SECTION_ID_CHAPTER_TAGS] =       { SECTION_ID_CHAPTER_TAGS, "tags", AV_TEXTFORMAT_SECTION_FLAG_HAS_VARIABLE_FIELDS, { -1 }, .element_name = "tag", .unique_name = "chapter_tags" },
     [SECTION_ID_ERROR] =              { SECTION_ID_ERROR, "error", 0, { -1 } },
-    [SECTION_ID_FORMAT] =             { SECTION_ID_FORMAT, "format", 0, { SECTION_ID_FORMAT_TAGS, -1 } },
+    [SECTION_ID_FORMAT] =             { SECTION_ID_FORMAT, "format", 0, { SECTION_ID_FORMAT_HASHES, SECTION_ID_FORMAT_TAGS, -1 } },
+    [SECTION_ID_FORMAT_HASHES] =      { SECTION_ID_FORMAT_HASHES, "hashes", 0, { -1 }, .unique_name = "format_hashes" },
     [SECTION_ID_FORMAT_TAGS] =        { SECTION_ID_FORMAT_TAGS, "tags", AV_TEXTFORMAT_SECTION_FLAG_HAS_VARIABLE_FIELDS, { -1 }, .element_name = "tag", .unique_name = "format_tags" },
     [SECTION_ID_FRAMES] =             { SECTION_ID_FRAMES, "frames", AV_TEXTFORMAT_SECTION_FLAG_IS_ARRAY, { SECTION_ID_FRAME, SECTION_ID_SUBTITLE, -1 } },
     [SECTION_ID_FRAME] =              { SECTION_ID_FRAME, "frame", 0, { SECTION_ID_FRAME_TAGS, SECTION_ID_FRAME_SIDE_DATA_LIST, SECTION_ID_FRAME_LOGS, -1 } },
@@ -2810,6 +2814,109 @@ static int show_chapters(AVTextFormatContext *tfc, InputFile *ifile)
     return ret;
 }
 
+/* Both hashes read this much at each end of the file. */
+#define FILE_HASH_CHUNK 65536
+
+/* Reads the FILE_HASH_CHUNK bytes from pos, or up to the end of the file. */
+static int read_file_hash_chunk(AVIOContext *pb, int64_t pos, uint8_t *buf)
+{
+    int64_t ret = avio_seek(pb, pos, SEEK_SET);
+    if (ret < 0)
+        return ret;
+    ret = avio_read(pb, buf, FILE_HASH_CHUNK);
+    return ret == AVERROR_EOF ? 0 : ret;
+}
+
+static void sha1_hex(struct AVSHA *sha, const uint8_t *data, size_t size, char *hex)
+{
+    uint8_t digest[20];
+
+    av_sha_init(sha, 160);
+    av_sha_update(sha, data, size);
+    av_sha_final(sha, digest);
+    for (int i = 0; i < 20; i++)
+        snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+}
+
+/*
+ * Two hashes of the file that tell it again without reading it whole:
+ *
+ * - "content": the SHA-1, in hex, of the size in decimal followed by the hex
+ *   SHA-1 of the first 64 KiB, and of the last 64 KiB when the file is larger.
+ *   It is the hash media servers keep for a file's part.
+ * - "oshash": OpenSubtitles' hash, the size plus every little-endian 64-bit
+ *   word of the first and last 64 KiB, wrapping, in 16 hex digits. As in the
+ *   reference implementation, a file under 128 KiB has none.
+ *
+ * Only a seekable input is read, after everything else: the demuxer is done
+ * with it.
+ */
+static int show_format_hashes(AVTextFormatContext *tfc, AVIOContext *pb, int64_t size)
+{
+    uint8_t *head = NULL, *tail = NULL;
+    struct AVSHA *sha = NULL;
+    char head_hex[41], tail_hex[41] = "", content[41];
+    char *composed = NULL;
+    int head_size, tail_size = 0, ret;
+
+    if (!pb || size <= 0 || !(pb->seekable & AVIO_SEEKABLE_NORMAL))
+        return 0;
+
+    head = av_malloc(FILE_HASH_CHUNK);
+    tail = av_malloc(FILE_HASH_CHUNK);
+    sha  = av_sha_alloc();
+    if (!head || !tail || !sha) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+
+    ret = head_size = read_file_hash_chunk(pb, 0, head);
+    if (ret < 0)
+        goto end;
+    if (size > FILE_HASH_CHUNK) {
+        ret = tail_size = read_file_hash_chunk(pb, size - FILE_HASH_CHUNK, tail);
+        if (ret < 0)
+            goto end;
+    }
+    ret = 0;
+    if (head_size != FFMIN(size, FILE_HASH_CHUNK) ||
+        (size > FILE_HASH_CHUNK && tail_size != FILE_HASH_CHUNK)) {
+        av_log(NULL, AV_LOG_WARNING,
+               "The file is shorter than its size, not hashing it\n");
+        goto end;
+    }
+
+    sha1_hex(sha, head, head_size, head_hex);
+    if (tail_size)
+        sha1_hex(sha, tail, tail_size, tail_hex);
+    composed = av_asprintf("%"PRId64"%s%s", size, head_hex, tail_hex);
+    if (!composed) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    sha1_hex(sha, (const uint8_t *)composed, strlen(composed), content);
+
+    avtext_print_section_header(tfc, NULL, SECTION_ID_FORMAT_HASHES);
+    print_str("content", content);
+    if (size >= 2 * FILE_HASH_CHUNK) {
+        uint64_t oshash = size;
+        char hex[17];
+
+        for (int i = 0; i < FILE_HASH_CHUNK; i += 8)
+            oshash += AV_RL64(head + i) + AV_RL64(tail + i);
+        snprintf(hex, sizeof(hex), "%016"PRIx64, oshash);
+        print_str("oshash", hex);
+    }
+    avtext_print_section_footer(tfc);
+
+end:
+    av_free(composed);
+    av_free(sha);
+    av_free(head);
+    av_free(tail);
+    return ret;
+}
+
 static int show_format(AVTextFormatContext *tfc, InputFile *ifile)
 {
     AVFormatContext *fmt_ctx = ifile->fmt_ctx;
@@ -2833,7 +2940,11 @@ static int show_format(AVTextFormatContext *tfc, InputFile *ifile)
     if (fmt_ctx->bit_rate > 0) print_val    ("bit_rate", fmt_ctx->bit_rate, unit_bit_per_second_str);
     else                       print_str_opt("bit_rate", "N/A");
     print_int("probe_score", fmt_ctx->probe_score);
-    if (do_show_format_tags)
+    /* Bit-exact output is what FATE compares, and its references have no hashes. */
+    if (do_show_format_hashes && !do_bitexact &&
+        !(fmt_ctx->iformat->flags & AVFMT_NOFILE))
+        ret = show_format_hashes(tfc, fmt_ctx->pb, size);
+    if (ret >= 0 && do_show_format_tags)
         ret = show_tags(tfc, fmt_ctx->metadata, SECTION_ID_FORMAT_TAGS);
 
     avtext_print_section_footer(tfc);
@@ -3780,6 +3891,7 @@ int main(int argc, char **argv)
     SET_DO_SHOW(STREAM_GROUP_STREAM_DISPOSITION, stream_disposition);
 
     SET_DO_SHOW(CHAPTER_TAGS, chapter_tags);
+    SET_DO_SHOW(FORMAT_HASHES, format_hashes);
     SET_DO_SHOW(FORMAT_TAGS, format_tags);
     SET_DO_SHOW(FRAME_TAGS, frame_tags);
     SET_DO_SHOW(PROGRAM_TAGS, program_tags);
