@@ -100,6 +100,10 @@ typedef struct FileContext {
     int pkt_size;
     int follow;
     int seekable;
+    int readahead;      ///< the most read ahead of a sequential reader, 0 for none
+    uint8_t *ra_buf;    ///< what was read ahead, ra_len bytes, of which ra_pos are consumed
+    int ra_pos, ra_len;
+    int ra_window;      ///< the next read ahead: doubled on each sequential refill, 0 after a seek
 #if HAVE_DIRENT_H
     DIR *dir;
 #endif
@@ -114,6 +118,7 @@ static const AVOption file_options[] = {
     { "follow", "Follow a file as it is being written", offsetof(FileContext, follow), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     { "seekable", "Sets if the file is seekable", offsetof(FileContext, seekable), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, 0, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_ENCODING_PARAM },
     { "pkt_size", "Maximum packet size", offsetof(FileContext, pkt_size), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_ENCODING_PARAM },
+    { "readahead", "set the most read ahead of a sequential reader, 0 to disable", offsetof(FileContext, readahead), AV_OPT_TYPE_INT, { .i64 = 4 << 20 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     { NULL }
 };
 
@@ -144,12 +149,53 @@ static const AVClass fd_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
+/* The first read ahead after a seek, doubled on each sequential refill up to
+ * the readahead option. */
+#define READAHEAD_MIN (64 * 1024)
+
+/**
+ * Reads as a sequential reader goes on in growing blocks, so that a file
+ * read in small pieces (an MPEG-TS demuxer refills a 32 KiB buffer) is
+ * read in few large requests: over a network file system, where each read
+ * waits for its round trip, 32 KiB at a time reads at a fraction of the
+ * link's speed. A seek drops what was read ahead and starts small again,
+ * so a reader that seeks often (subtitles read through Matroska's cues)
+ * reads no more than before.
+ */
+static int file_read_ahead(FileContext *c, unsigned char *buf, int size)
+{
+    int ret;
+
+    if (c->ra_pos < c->ra_len) {
+        size = FFMIN(size, c->ra_len - c->ra_pos);
+        memcpy(buf, c->ra_buf + c->ra_pos, size);
+        c->ra_pos += size;
+        return size;
+    }
+    c->ra_window = c->ra_window ? FFMIN(2 * c->ra_window, c->readahead)
+                                : FFMIN(READAHEAD_MIN, c->readahead);
+    if (size >= c->ra_window)
+        return read(c->fd, buf, size);
+    if (!c->ra_buf && !(c->ra_buf = av_malloc(c->readahead)))
+        return read(c->fd, buf, size);
+    ret = read(c->fd, c->ra_buf, c->ra_window);
+    if (ret <= 0)
+        return ret;
+    c->ra_len = ret;
+    c->ra_pos = FFMIN(size, ret);
+    memcpy(buf, c->ra_buf, c->ra_pos);
+    return c->ra_pos;
+}
+
 static int file_read(URLContext *h, unsigned char *buf, int size)
 {
     FileContext *c = h->priv_data;
     int ret;
     size = FFMIN(size, c->blocksize);
-    ret = read(c->fd, buf, size);
+    if (c->readahead)
+        ret = file_read_ahead(c, buf, size);
+    else
+        ret = read(c->fd, buf, size);
     if (ret == 0 && c->follow)
         return AVERROR(EAGAIN);
     if (ret == 0)
@@ -239,6 +285,7 @@ static int file_close(URLContext *h)
 {
     FileContext *c = h->priv_data;
     int ret = close(c->fd);
+    av_freep(&c->ra_buf);
     return (ret == -1) ? AVERROR(errno) : 0;
 }
 
@@ -257,9 +304,16 @@ static int64_t file_seek(URLContext *h, int64_t pos, int whence)
         return ret < 0 ? AVERROR(errno) : (S_ISFIFO(st.st_mode) ? 0 : st.st_size);
     }
 
-    ret = lseek(c->fd, pos, whence);
+    /* what was read ahead is ahead of where the reader is */
+    if (whence == SEEK_CUR)
+        pos -= c->ra_len - c->ra_pos;
 
-    return ret < 0 ? AVERROR(errno) : ret;
+    ret = lseek(c->fd, pos, whence);
+    if (ret < 0)
+        return AVERROR(errno);
+    c->ra_pos = c->ra_len = c->ra_window = 0;
+
+    return ret;
 }
 
 #if CONFIG_FILE_PROTOCOL
@@ -345,6 +399,12 @@ static int file_open(URLContext *h, const char *filename, int flags)
 
     if (c->seekable >= 0)
         h->is_streamed = !c->seekable;
+
+    /* only a regular file is read ahead: not one being written, nor followed
+     * as it grows, nor a FIFO, whose reader must not wait for more than it asks */
+    if (flags & AVIO_FLAG_WRITE || c->follow || h->is_streamed ||
+        fstat(fd, &st) || !S_ISREG(st.st_mode))
+        c->readahead = 0;
 
     return 0;
 }
