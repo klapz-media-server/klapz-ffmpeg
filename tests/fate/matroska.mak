@@ -400,9 +400,16 @@ fate-matroska-stereo3d-metadata: CMD = tmp=tests/data/fate/matroska-stereo3d-met
    -of default=nw=1 $$out; \
   ret=$$?; rm -f $$tmp $$out; test $$ret -eq 0
 
+# Generated here: chapters naming their titles in several displays and
+# languages, each exported as title-<language> beside the last one's title.
+FATE_MATROSKA_CHAPTER_TITLES-$(call DEMDEC, MATROSKA) += fate-matroska-chapter-titles
+fate-matroska-chapter-titles: CMD = probechapters $(TARGET_PATH)/tests/data/fate/matroska-chapter-titles.mkv
+fate-matroska-chapter-titles: tests/data/fate/matroska-chapter-titles.mkv
+
 FATE_SAMPLES_AVCONV += $(FATE_MATROSKA-yes)
+FATE_FFPROBE += $(FATE_MATROSKA_CHAPTER_TITLES-yes)
 FATE_SAMPLES_FFPROBE += $(FATE_MATROSKA_FFPROBE-yes)
 FATE_SAMPLES_FFMPEG_FFPROBE += $(FATE_MATROSKA_FFMPEG_FFPROBE-yes)
 FATE_FFMPEG_FFPROBE += $(FATE_MATROSKA_STEREO3D-yes)
 
-fate-matroska: $(FATE_MATROSKA-yes) $(FATE_MATROSKA_FFPROBE-yes) $(FATE_MATROSKA_FFMPEG_FFPROBE-yes) $(FATE_MATROSKA_STEREO3D-yes)
+fate-matroska: $(FATE_MATROSKA-yes) $(FATE_MATROSKA_CHAPTER_TITLES-yes) $(FATE_MATROSKA_FFPROBE-yes) $(FATE_MATROSKA_FFMPEG_FFPROBE-yes) $(FATE_MATROSKA_STEREO3D-yes)
