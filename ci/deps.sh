@@ -30,6 +30,7 @@ LIBVA_VER=2.22.0
 NVCODEC_VER=13.0.19.0
 CHROMAPRINT_VER=1.6.2
 ZVBI_VER=0.2.46
+ZIMG_VER=3.0.6
 LIBICONV_VER=1.18
 
 SRC_DIR=${SRC_DIR:-$PWD/.deps-src}
@@ -218,6 +219,17 @@ build_zvbi() {
     ac_cv_lib_png_png_destroy_write_struct=no         CPPFLAGS="-I$PREFIX/include" LDFLAGS="-L$PREFIX/lib"         autotools --disable-nls --disable-v4l --disable-dvb --disable-bktr         --disable-proxy --disable-tests --disable-examples --without-doxygen         --without-x
 }
 
+build_zimg() {
+    # HDR colorspace conversion (the zscale filter); HLG/PQ → linear before tonemap
+    fetch zimg https://github.com/sekrit-twc/zimg/archive/refs/tags/release-$ZIMG_VER.tar.gz
+    # a tag's archive has no configure (autogen.sh is autoreconf --install --force)
+    autoreconf -fi
+    # release-3.0.6 defaults STL_LIBS to -lstdc++; llvm-mingw and Apple clang use libc++
+    local stl=-lstdc++
+    case $OS in windows|macos) stl=-lc++ ;; esac
+    STL_LIBS="$stl" autotools
+}
+
 build_opencl() {
     fetch opencl-headers https://github.com/KhronosGroup/OpenCL-Headers/archive/refs/tags/$OPENCL_VER.tar.gz
     cmake_build -DBUILD_TESTING=OFF
@@ -288,7 +300,7 @@ build_omx_headers() {
 build_all_deps() {
     local list="zlib freetype fribidi harfbuzz libass ogg vorbis opus dav1d libxml2 openssl lame x264 chromaprint"
     [ "$OS" = windows ] && list="$list libiconv"
-    list="$list zvbi"
+    list="$list zvbi zimg"
     case $TARGET in
         linux-x86_64)   list="$list nvcodec opencl libdrm libva" ;;
         linux-arm64)    list="$list omx_headers" ;;

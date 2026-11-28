@@ -29,7 +29,7 @@ push sur `master` publie en plus une release GitHub `v<version>-<n° de run>`
   VideoToolbox/AudioToolbox) et hwaccels des décodeurs intégrés.
 - `deps.sh` : compile les bibliothèques tierces en statique (zlib, freetype,
   fribidi, harfbuzz, libass, ogg, vorbis, opus, dav1d, libxml2, openssl, lame,
-  x264, chromaprint, zvbi, + selon la cible libiconv (Windows), nv-codec-headers, chargeur OpenCL Khronos, libdrm,
+  x264, chromaprint, zvbi, zimg, + selon la cible libiconv (Windows), nv-codec-headers, chargeur OpenCL Khronos, libdrm,
   libva, libvpl, en-têtes OpenMAX).
 - `build.sh <cible>` : chaîne de compilation, dépendances (mises en cache),
   configure avec les mêmes options de compilation que Plex (clang, `-O3`,
@@ -60,6 +60,9 @@ push sur `master` publie en plus une release GitHub `v<version>-<n° de run>`
   (`-txt_format text -txt_page 888`), que Plex ne sait pas lire. ffprobe
   imprime en plus les pages de sous-titres qu'un flux télétexte déclare
   (`teletext_pages`, ex. `888:fra:hearing_impaired,889:fra:subtitles`).
+- `--enable-libzimg` : filtre `zscale` (conversion d'espace couleur HDR),
+  pour enchaîner HLG/PQ → linéaire → `tonemap` vers SDR. Plex n'embarque
+  pas libzimg.
 
 ## Build local
 
