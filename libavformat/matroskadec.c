@@ -309,11 +309,17 @@ typedef struct MatroskaAttachment {
     AVStream *stream;
 } MatroskaAttachment;
 
+typedef struct MatroskaChapterDisplay {
+    char    *string;
+    EbmlList languages;
+    EbmlList languages_bcp47;
+} MatroskaChapterDisplay;
+
 typedef struct MatroskaChapter {
     uint64_t start;
     uint64_t end;
     uint64_t uid;
-    char    *title;
+    EbmlList displays;
 
     AVChapter *chapter;
 } MatroskaChapter;
@@ -687,9 +693,10 @@ static EbmlSyntax matroska_attachments[] = {
 };
 
 static EbmlSyntax matroska_chapter_display[] = {
-    { MATROSKA_ID_CHAPSTRING,  EBML_UTF8, 0, 0, offsetof(MatroskaChapter, title) },
-    { MATROSKA_ID_CHAPLANG,    EBML_NONE },
-    { MATROSKA_ID_CHAPCOUNTRY, EBML_NONE },
+    { MATROSKA_ID_CHAPSTRING,       EBML_UTF8, 0, 0,              offsetof(MatroskaChapterDisplay, string) },
+    { MATROSKA_ID_CHAPLANG,         EBML_STR,  0, sizeof(char *), offsetof(MatroskaChapterDisplay, languages) },
+    { MATROSKA_ID_CHAPLANG_BCP47,   EBML_STR,  0, sizeof(char *), offsetof(MatroskaChapterDisplay, languages_bcp47) },
+    { MATROSKA_ID_CHAPCOUNTRY,      EBML_NONE },
     CHILD_OF(matroska_chapter_entry)
 };
 
@@ -697,7 +704,7 @@ static EbmlSyntax matroska_chapter_entry[] = {
     { MATROSKA_ID_CHAPTERTIMESTART,   EBML_UINT, 0, 0, offsetof(MatroskaChapter, start), { .u = AV_NOPTS_VALUE } },
     { MATROSKA_ID_CHAPTERTIMEEND,     EBML_UINT, 0, 0, offsetof(MatroskaChapter, end),   { .u = AV_NOPTS_VALUE } },
     { MATROSKA_ID_CHAPTERUID,         EBML_UINT, 0, 0, offsetof(MatroskaChapter, uid) },
-    { MATROSKA_ID_CHAPTERDISPLAY,     EBML_NEST, 0, 0,                        0,         { .n = matroska_chapter_display } },
+    { MATROSKA_ID_CHAPTERDISPLAY,     EBML_NEST, 0, sizeof(MatroskaChapterDisplay), offsetof(MatroskaChapter, displays), { .n = matroska_chapter_display } },
     { MATROSKA_ID_CHAPTERFLAGHIDDEN,  EBML_NONE },
     { MATROSKA_ID_CHAPTERFLAGENABLED, EBML_NONE },
     { MATROSKA_ID_CHAPTERPHYSEQUIV,   EBML_NONE },
@@ -1617,7 +1624,16 @@ static void ebml_free(EbmlSyntax *syntax, void *data)
         switch (syntax[i].type) {
         case EBML_STR:
         case EBML_UTF8:
-            av_freep(data_off);
+            if (syntax[i].list_elem_size) {
+                EbmlList *list = data_off;
+                char **strings = list->elem;
+                for (j = 0; j < list->nb_elem; j++)
+                    av_freep(&strings[j]);
+                av_freep(&list->elem);
+                list->nb_elem = 0;
+                list->alloc_elem_size = 0;
+            } else
+                av_freep(data_off);
             break;
         case EBML_BIN:
             av_buffer_unref(&((EbmlBin *) data_off)->buf);
@@ -1877,6 +1893,42 @@ static void matroska_convert_tag(AVFormatContext *s, EbmlList *list,
         }
     }
     ff_metadata_conv(metadata, NULL, ff_mkv_metadata_conv);
+}
+
+/*
+ * Every display's string in each language it states, as tags name a value in a
+ * language ("title-ger"), beside the title, which stays the last display's.
+ * ChapLanguageBCP47 supersedes ChapLanguage, as the specification says; a
+ * display stating neither is English, the format's default, and "und" is
+ * no language.
+ */
+static void matroska_add_chapter_titles(AVChapter *chapter,
+                                        const MatroskaChapter *mc)
+{
+    const MatroskaChapterDisplay *displays = mc->displays.elem;
+    char key[128];
+
+    for (int i = 0; i < mc->displays.nb_elem; i++) {
+        const MatroskaChapterDisplay *display = &displays[i];
+        const EbmlList *languages = display->languages_bcp47.nb_elem ?
+                                    &display->languages_bcp47 :
+                                    &display->languages;
+        char *const *codes = languages->elem;
+
+        if (!display->string)
+            continue;
+        if (!languages->nb_elem) {
+            av_dict_set(&chapter->metadata, "title-eng", display->string, 0);
+            continue;
+        }
+        for (int j = 0; j < languages->nb_elem; j++) {
+            if (!codes[j] || !*codes[j] || !strcmp(codes[j], "und"))
+                continue;
+            if (snprintf(key, sizeof(key), "title-%s", codes[j]) >= (int)sizeof(key))
+                continue;
+            av_dict_set(&chapter->metadata, key, display->string, 0);
+        }
+    }
 }
 
 static void matroska_convert_tags(AVFormatContext *s)
@@ -3609,11 +3661,19 @@ static int matroska_read_header(AVFormatContext *s)
     for (i = 0; i < chapters_list->nb_elem; i++)
         if (chapters[i].start != AV_NOPTS_VALUE && chapters[i].uid &&
             (max_start == 0 || chapters[i].start > max_start)) {
+            const MatroskaChapterDisplay *displays = chapters[i].displays.elem;
+            const char *title = NULL;
+            /* The last string read, as when each one replaced the one before. */
+            for (j = 0; j < chapters[i].displays.nb_elem; j++)
+                if (displays[j].string)
+                    title = displays[j].string;
             chapters[i].chapter =
                 avpriv_new_chapter(s, chapters[i].uid,
                                    (AVRational) { 1, 1000000000 },
                                    chapters[i].start, chapters[i].end,
-                                   chapters[i].title);
+                                   title);
+            if (chapters[i].chapter)
+                matroska_add_chapter_titles(chapters[i].chapter, &chapters[i]);
             max_start = chapters[i].start;
         }
 
