@@ -1,10 +1,14 @@
-9cb225d7afd5aec09f3b90501f74cc0f *tests/data/fate/matroska-reenc-chapter-nofilter.nut
-28587 tests/data/fate/matroska-reenc-chapter-nofilter.nut
+a04af25a8f666ff94ca7eb67354b9cce *tests/data/fate/matroska-reenc-chapter-nofilter.nut
+28705 tests/data/fate/matroska-reenc-chapter-nofilter.nut
 [CHAPTER]
 TAG:title=Schloß
+TAG:title-en-US=Neighborhood
+TAG:title-en-GB=Neighbourhood
+TAG:title-de-1901=Schloß
 TAG:NUMBER_OF_FRAMES=test
 [/CHAPTER]
 [CHAPTER]
 TAG:title=Carro
+TAG:title-es-MX=Carro
 TAG:DESCRIPTION=Chapter titles for regional variants of English/Spanish
 [/CHAPTER]
